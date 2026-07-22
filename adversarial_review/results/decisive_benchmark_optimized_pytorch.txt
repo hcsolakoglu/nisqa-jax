@@ -1,0 +1,53 @@
+======================================================================================================================
+DECISIVE BENCHMARK — JAX port vs OPTIMIZED PyTorch (RTX 3070, float32, warm model-forward, compute-only)
+Speedup = PT_latency / JAX_latency  (>1 = JAX faster). Median of 60 iters after warmup; compile excluded.
+======================================================================================================================
+
+### mos  (parity JAX-vs-PT-eager max abs diff = 2.38e-07)
+ bs steps |      JAX |         eager |   cuda-graphs | compile-dynamic | compile-reduce-overhead | compile-max-autotune | speedup(eager/cg/dyn/ro/max)
+------------------------------------------------------------------------------------------------------------------------------------------------------
+  1    64 |   0.448ms |      1.851ms |      0.532ms |       BLOCKED |       BLOCKED |       BLOCKED | 4.13x / 1.19x / -- / -- / --
+  1   256 |   0.746ms |      2.435ms |      1.413ms |       BLOCKED |       BLOCKED |       BLOCKED | 3.27x / 1.90x / -- / -- / --
+  1   512 |   1.191ms |      3.646ms |      2.655ms |       BLOCKED |       BLOCKED |       BLOCKED | 3.06x / 2.23x / -- / -- / --
+  8    64 |   1.188ms |      3.698ms |      2.642ms |       BLOCKED |       BLOCKED |       BLOCKED | 3.11x / 2.22x / -- / -- / --
+  8   256 |   3.529ms |     10.569ms |      9.455ms |       BLOCKED |       BLOCKED |       BLOCKED | 2.99x / 2.68x / -- / -- / --
+  8   512 |   6.632ms |     18.926ms |     18.026ms |       BLOCKED |       BLOCKED |       BLOCKED | 2.85x / 2.72x / -- / -- / --
+ 16    64 |   1.981ms |      5.990ms |      5.004ms |       BLOCKED |       BLOCKED |       BLOCKED | 3.02x / 2.53x / -- / -- / --
+ 16   256 |   6.617ms |     18.806ms |     17.853ms |       BLOCKED |       BLOCKED |       BLOCKED | 2.84x / 2.70x / -- / -- / --
+ 16   512 |  12.710ms |     36.671ms |     35.979ms |       BLOCKED |       BLOCKED |       BLOCKED | 2.89x / 2.83x / -- / -- / --
+
+  JAX speedup vs each PT mode (geomean over available shapes, >1 = JAX faster):
+                     eager: geomean 3.11x  (min 2.84x, max 4.13x, n=9)
+               cuda-graphs: geomean 2.27x  (min 1.19x, max 2.83x, n=9)
+           compile-dynamic: no available shapes (BLOCKED in this env)
+    compile-reduce-overhead: no available shapes (BLOCKED in this env)
+      compile-max-autotune: no available shapes (BLOCKED in this env)
+
+### tts  (parity JAX-vs-PT-eager max abs diff = 5.48e-06)
+ bs steps |      JAX |         eager |   cuda-graphs | compile-dynamic | compile-reduce-overhead | compile-max-autotune | speedup(eager/cg/dyn/ro/max)
+------------------------------------------------------------------------------------------------------------------------------------------------------
+  1    64 |   0.983ms |      1.142ms |           n/a |      1.220ms |      1.210ms |      1.213ms | 1.16x / -- / 1.24x / 1.23x / 1.23x
+  1   256 |   3.229ms |      2.348ms |           n/a |      2.395ms |      2.372ms |      2.367ms | 0.73x / -- / 0.74x / 0.73x / 0.73x
+  1   512 |   8.658ms |      4.234ms |           n/a |      4.279ms |      4.266ms |      4.263ms | 0.49x / -- / 0.49x / 0.49x / 0.49x
+  8    64 |   3.919ms |      2.359ms |           n/a |      2.410ms |      2.399ms |      2.399ms | 0.60x / -- / 0.62x / 0.61x / 0.61x
+  8   256 |   6.896ms |      7.657ms |           n/a |      7.565ms |      7.463ms |      7.456ms | 1.11x / -- / 1.10x / 1.08x / 1.08x
+  8   512 |  14.907ms |     14.324ms |           n/a |     14.361ms |     14.384ms |     14.391ms | 0.96x / -- / 0.96x / 0.96x / 0.97x
+ 16    64 |   2.466ms |      3.724ms |           n/a |      3.832ms |      3.851ms |      3.860ms | 1.51x / -- / 1.55x / 1.56x / 1.57x
+ 16   256 |   9.403ms |     13.503ms |           n/a |     13.421ms |     13.410ms |     13.427ms | 1.44x / -- / 1.43x / 1.43x / 1.43x
+ 16   512 |  22.068ms |     26.171ms |           n/a |     26.216ms |     26.223ms |     26.209ms | 1.19x / -- / 1.19x / 1.19x / 1.19x
+
+  JAX speedup vs each PT mode (geomean over available shapes, >1 = JAX faster):
+                     eager: geomean 0.96x  (min 0.49x, max 1.51x, n=9)
+               cuda-graphs: no available shapes (BLOCKED in this env)
+           compile-dynamic: geomean 0.97x  (min 0.49x, max 1.55x, n=9)
+    compile-reduce-overhead: geomean 0.97x  (min 0.49x, max 1.56x, n=9)
+      compile-max-autotune: geomean 0.97x  (min 0.49x, max 1.57x, n=9)
+
+Notes:
+- JAX: jitted forward + block_until_ready, inputs pre-staged on-GPU (predict_segments minus H2D/D2H).
+- PT eager: cudnn.benchmark=True, eval, no_grad, TF32 off. PT compile: inductor/triton 3.6.0.
+- mos torch.compile BLOCKED: triton fused-softmax kernel launch fails (CUDA driver error: invalid
+  argument) on RTX 3070/driver 595.84/sm_86. cuda-graphs (manual, triton-free) provided instead.
+- tts torch.compile works (no fused softmax). tts cuda-graphs BLOCKED: cuDNN LSTM not capturable.
+- PT uses a numerically-identical pack/unpack+mask bypass (parity vs stock eager: mos 0.0, tts 2.6e-6).
+- Latencies are median of 60 timed iters after warmup (compile excluded).

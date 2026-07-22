@@ -3,7 +3,7 @@
 from .config import FeatureConfig, ModelConfig
 from .model import Precision
 
-from .checkpoint import convert_checkpoint, load_converted_checkpoint, load_model
+from .checkpoint import convert_checkpoint, load_converted_checkpoint, load_model, prewarm
 
 __all__ = [
     "FeatureConfig",
@@ -12,6 +12,7 @@ __all__ = [
     "convert_checkpoint",
     "load_converted_checkpoint",
     "load_model",
+    "prewarm",
     "predict_batch",
     "predict_file",
 ]

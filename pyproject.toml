@@ -9,7 +9,12 @@ description = "Standalone JAX inference port for the shipped NISQA checkpoints"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-  "jax>=0.4.30",
+  # Pin jax to the tested 0.4.x minor. JAX's compilation-cache config API churns
+  # across minors (e.g. `initialize_cache`/`is_initialized` were removed after
+  # 0.4.30); this repo uses the version-tolerant `jax_compilation_cache_dir`
+  # knob, but staying within 0.4.x avoids surprise breakage of the persistent
+  # cache and JIT behavior. Bump only after re-running the full parity suite.
+  "jax>=0.4.30,<0.5",
   "numpy>=1.26,<2",
   "scipy>=1.11",
   "librosa>=0.10.2",

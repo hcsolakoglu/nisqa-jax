@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Sequence
@@ -8,10 +9,24 @@ from typing import Sequence
 import numpy as np
 import pandas as pd
 
-from .checkpoint import load_model
+from .checkpoint import load_model, prewarm
 from .config import ModelConfig
 from .features import estimate_n_wins, preprocess_file
 from .model import NisqaJaxModel
+
+logger = logging.getLogger(__name__)
+
+# JAX GPU OOM surfaces as jaxlib.XlaRuntimeError (RESOURCE_EXHAUSTED) or, on
+# some builds, a plain RuntimeError carrying that token. We match broadly on
+# the XLA status token so auto_batch recovery works across jaxlib versions.
+_OOM_TOKENS = ("resourceexhausted", "out of memory", "oom")
+
+
+def _is_oom(exc: BaseException) -> bool:
+    name = type(exc).__name__.lower()
+    if "resourceexhausted" in name or "xlaruntimeerror" in name:
+        return True
+    return any(tok in str(exc).lower() for tok in _OOM_TOKENS)
 
 # Internal output name -> PyTorch-compatible CSV column. The original NISQA
 # (gabrielmittag/NISQA: NISQA_model.py:76-79, NISQA_lib.py:1461-1465) writes a
@@ -39,6 +54,18 @@ def _csv_row(model: NisqaJaxModel, path: Path, values: np.ndarray) -> dict:
     for idx, name in enumerate(model.config.output_names):
         row[_CSV_COLUMN_FOR_OUTPUT[name]] = float(values[idx])
     row["model"] = model.config.source_path.stem
+    return row
+
+
+def _error_row(model: NisqaJaxModel, path: Path, message: str) -> dict:
+    # collect-mode row for a file that failed preprocessing: prediction columns
+    # are NaN, `model` is None, and `error` carries the exception message so the
+    # caller sees a complete per-file record in a single DataFrame.
+    row: dict = {"deg": str(path)}
+    for name in model.config.output_names:
+        row[_CSV_COLUMN_FOR_OUTPUT[name]] = np.nan
+    row["model"] = None
+    row["error"] = message
     return row
 
 
@@ -78,6 +105,8 @@ def predict_batch(
     preprocess_workers: int = 1,
     length_bucket: int | None = None,
     sort_by_length: bool = True,
+    on_error: str = "raise",
+    auto_batch: bool = False,
 ) -> pd.DataFrame:
     """Length-aware batched prediction.
 
@@ -86,78 +115,162 @@ def predict_batch(
     batch-max -> GPU predict (ThreadPoolExecutor prefetch overlap) -> restore
     original input order. ``length_bucket=None`` selects the model-derived default
     (``default_length_bucket``); ``length_bucket=1`` disables grid rounding.
+
+    Error handling (``on_error``):
+      * ``"raise"`` (default): the first file that fails preprocessing aborts the
+        whole batch; the exception is re-raised wrapped with the failing file
+        path. Preserves the original fail-fast behavior with a clearer message.
+      * ``"collect"``: failed files are skipped, the rest of the batch completes,
+        and the returned DataFrame contains one row per input file in original
+        order — successful rows carry their predictions with ``error=NaN``;
+        failed rows carry ``NaN`` predictions and an ``error`` message string.
+        A single corrupt file therefore never discards the completed rows.
+
+    Memory recovery (``auto_batch``): on a JAX GPU out-of-memory
+    (``ResourceExhaustedError``) during a chunk's forward pass, the chunk is
+    halved and retried (recursively, down to a single sample) and each reduction
+    is logged. Off by default; only the failing chunk is re-run, completed
+    chunks are kept.
     """
     if preprocess_workers < 1:
         raise ValueError("preprocess_workers must be >= 1")
+    if on_error not in {"raise", "collect"}:
+        raise ValueError(f"on_error must be 'raise' or 'collect', got {on_error!r}")
     paths = [Path(p) for p in wav_paths]
     if not paths:
         raise ValueError("No wav files provided")
     feat = model.config.feature
     if length_bucket is None:
         length_bucket = default_length_bucket(model.config)
+    collect = on_error == "collect"
+
+    # results[orig_index] -> row dict (success or error row); emitted in original
+    # input order. In collect mode a failure fills an error row; in raise mode it
+    # re-raises immediately, so only successful rows ever accumulate.
+    results: list[dict | None] = [None] * len(paths)
+
+    def _record_error(orig: int, exc: BaseException) -> None:
+        message = f"{type(exc).__name__}: {exc}"
+        if collect:
+            results[orig] = _error_row(model, paths[orig], message)
+        else:
+            # raise mode: surface the failing path explicitly so a corrupt wav
+            # among thousands is identifiable without re-running one-by-one.
+            raise RuntimeError(f"predict_batch failed on file {paths[orig]}: {exc}") from exc
 
     # Cheap first pass: estimate n_wins from audio headers (no mel-spec decode).
     # Used only for length-aware scheduling; actual padding uses real n_wins, so
     # an estimate off-by-one (only possible under resampling) is correctness-safe.
-    n_wins_est = [estimate_n_wins(p, feat) for p in paths]
+    # In collect mode a too-short/too-long file is recorded and excluded here so
+    # it never reaches the (batched) GPU stage.
+    n_wins_est: list[int] = []
+    ok_idx: list[int] = []
+    for i, p in enumerate(paths):
+        try:
+            n_wins_est.append(estimate_n_wins(p, feat))
+            ok_idx.append(i)
+        except Exception as exc:
+            n_wins_est.append(-1)
+            _record_error(i, exc)
 
-    # Stable sort by estimated n_wins (descending). Python's sort is stable, so
-    # ties preserve original input order -> deterministic, order-restorable.
-    order = sorted(range(len(paths)), key=lambda i: n_wins_est[i], reverse=True)
+    # Stable sort by estimated n_wins (descending) over the viable files only.
+    # Python's sort is stable, so ties preserve original input order.
+    order = sorted(ok_idx, key=lambda i: n_wins_est[i], reverse=True)
     if not sort_by_length:
-        order = list(range(len(paths)))
+        order = sorted(ok_idx)
     # Adjacent fixed-size chunks over the (sorted) order.
     chunked_idx = [order[start : start + batch_size] for start in range(0, len(order), batch_size)]
 
-    # results[orig_index] -> row dict; filled out-of-order, emitted in original order.
-    results: list[dict[str, float] | None] = [None] * len(paths)
-
-    def prepare(chunk_paths: list[Path]):
-        return [preprocess_file(path, feat, channel=channel) for path in chunk_paths]
-
-    def predict_prepared(chunk_idx: list[int], chunk_paths: list[Path], prepared) -> None:
+    def _predict_padded(prepared: list, cur_bs: int) -> np.ndarray:
         # prepared: list of (segments[n_wins, 1, n_mels, seg_length], n_wins).
-        actual_n = np.stack([item[1] for item in prepared], axis=0)
         # Pad to the chunk's real max rounded up to the bucket grid (fewer compiles).
+        actual_n = np.stack([item[1] for item in prepared], axis=0)
         max_steps = _round_up(int(actual_n.max()), length_bucket)
-        # Fixed remainder padding: fill short samples with zeros (masked by n_wins);
-        # if the final chunk is partial, repeat the last real sample to keep the
-        # batch dimension == batch_size (avoids an extra compile for a smaller batch),
-        # then discard those dummy outputs.
         bsz = len(prepared)
-        if bsz < batch_size:
-            # Repeat the last real sample cropped to n_wins=1 so the dummy row's
-            # segment shape matches its (discarded) n_wins entry.
+        # Fixed remainder padding: fill short samples with zeros (masked by n_wins);
+        # if the chunk is smaller than cur_bs, repeat the last real sample to keep
+        # the batch dimension == cur_bs (avoids an extra compile for a smaller
+        # batch), then discard those dummy outputs.
+        if bsz < cur_bs:
             last_seg = prepared[-1][0][:1]
             dummy = (last_seg, np.asarray(1, dtype=np.int32))
-            prepared = list(prepared) + [dummy] * (batch_size - bsz)
-            actual_n = np.concatenate([actual_n, np.asarray([1] * (batch_size - bsz), dtype=np.int32)])
+            prepared = list(prepared) + [dummy] * (cur_bs - bsz)
+            actual_n = np.concatenate([actual_n, np.asarray([1] * (cur_bs - bsz), dtype=np.int32)])
         x = np.zeros((len(prepared), max_steps, 1, feat.n_mels, feat.seg_length), dtype=np.float32)
         for j, (seg, nw) in enumerate(prepared):
             x[j, : int(nw)] = seg[: int(nw)]
         out = model.predict_segments(x, actual_n)
+        return np.asarray(out)[:bsz]  # discard dummy rows
+
+    def _predict_with_auto_batch(prepared: list, cur_bs: int) -> np.ndarray:
+        try:
+            return _predict_padded(prepared, cur_bs)
+        except Exception as exc:
+            if not auto_batch or not _is_oom(exc) or cur_bs <= 1:
+                raise
+            new_bs = max(1, cur_bs // 2)
+            logger.warning(
+                "auto_batch: GPU OOM at batch_size=%d (%d samples); retrying at %d",
+                cur_bs, len(prepared), new_bs,
+            )
+            outs = [
+                _predict_with_auto_batch(prepared[s : s + new_bs], new_bs)
+                for s in range(0, len(prepared), new_bs)
+            ]
+            return np.concatenate(outs, axis=0)
+
+    def _store(chunk_idx: list[int], prepared: list) -> None:
+        outs = _predict_with_auto_batch(prepared, batch_size)
         for j, orig in enumerate(chunk_idx):
-            results[orig] = _csv_row(model, paths[orig], out[j])
+            results[orig] = _csv_row(model, paths[orig], outs[j])
+
+    def _prepare_one(orig: int):
+        try:
+            return preprocess_file(paths[orig], feat, channel=channel)
+        except Exception as exc:
+            _record_error(orig, exc)
+            return None
+
+    def predict_prepared(chunk_idx: list[int], prepared) -> None:
+        # prepared may contain None placeholders for files that failed in the
+        # prefetch path (collect mode); drop them and keep the surviving indices.
+        pairs = [(idx, item) for idx, item in zip(chunk_idx, prepared) if item is not None]
+        if not pairs:
+            return
+        live_idx = [p[0] for p in pairs]
+        live_prepared = [p[1] for p in pairs]
+        _store(live_idx, live_prepared)
 
     if preprocess_workers == 1 or len(chunked_idx) < 2:
         for chunk_idx in chunked_idx:
-            chunk_paths = [paths[i] for i in chunk_idx]
-            predict_prepared(chunk_idx, chunk_paths, prepare(chunk_paths))
-        return pd.DataFrame([r for r in results if r is not None])
+            prepared = [_prepare_one(orig) for orig in chunk_idx]
+            predict_prepared(chunk_idx, prepared)
+        return _emit(results, collect)
 
     # Prefetch pipeline: overlap CPU preprocess of chunk[i+1] with GPU compute of
-    # chunk[i]. Operates over the scheduled (sorted) chunk order.
+    # chunk[i]. Operates over the scheduled (sorted) chunk order. In collect mode
+    # a per-file failure is recorded and that file is dropped from its chunk.
     with ThreadPoolExecutor(max_workers=preprocess_workers) as executor:
-        first_paths = [paths[i] for i in chunked_idx[0]]
-        futures = [executor.submit(preprocess_file, path, feat, channel=channel) for path in first_paths]
+        futures = {orig: executor.submit(_prepare_one, orig) for orig in chunked_idx[0]}
         for idx, chunk_idx in enumerate(chunked_idx):
-            prepared = [future.result() for future in futures]
+            prepared = [futures.pop(orig).result() for orig in chunk_idx]
             if idx + 1 < len(chunked_idx):
-                next_paths = [paths[i] for i in chunked_idx[idx + 1]]
-                futures = [executor.submit(preprocess_file, path, feat, channel=channel) for path in next_paths]
-            chunk_paths = [paths[i] for i in chunk_idx]
-            predict_prepared(chunk_idx, chunk_paths, prepared)
-    return pd.DataFrame([r for r in results if r is not None])
+                futures = {orig: executor.submit(_prepare_one, orig) for orig in chunked_idx[idx + 1]}
+            predict_prepared(chunk_idx, prepared)
+    return _emit(results, collect)
+
+
+def _emit(results: list[dict | None], collect: bool) -> pd.DataFrame:
+    # Emit rows in original input order. In collect mode every input file has a
+    # row (success or error); in raise mode only successfully predicted rows
+    # exist (a failure would have re-raised already).
+    rows = [r for r in results if r is not None]
+    df = pd.DataFrame(rows)
+    if collect and "error" in df.columns:
+        # Stable column order: deg, *_pred, model, error.
+        cols = [c for c in df.columns if c != "error"] + ["error"]
+        df = df[cols]
+    return df
 
 
 def _collect_paths(args: argparse.Namespace) -> list[Path]:
@@ -199,9 +312,22 @@ def main(argv: Sequence[str] | None = None) -> None:
                         help="pad batch-max up to this grid (default: model-derived 32 self-att / 64 TTS; 1 = exact)")
     parser.add_argument("--no_sort_by_length", action="store_true",
                         help="disable stable length sort (use naive in-order batching)")
+    parser.add_argument("--on_error", choices=["raise", "collect"], default="raise",
+                        help="raise: abort batch on first bad file (default); "
+                             "collect: skip bad files, add an `error` column")
+    parser.add_argument("--auto_batch", action="store_true",
+                        help="on GPU OOM, halve batch_size and retry down to 1 (logs each reduction)")
+    parser.add_argument("--prewarm", action="store_true",
+                        help="pre-compile the model's default length-bucket grid at --bs before "
+                             "predicting, so the first real batch hits the persistent cache")
     args = parser.parse_args(argv)
 
     model = load_model(args.pretrained_model, device=args.device, cache_dir=args.cache_dir, precision=args.precision)
+    if args.prewarm:
+        # Warm the persistent cache for the model's default bucket grid at the
+        # requested batch size so the first real batch of that shape is a cache
+        # hit (no compile stall). Uses dummy zeros; output is discarded.
+        prewarm(model, [args.bs], [default_length_bucket(model.config)], cache_dir=args.cache_dir)
     paths = _collect_paths(args)
     if not paths:
         raise ValueError("No wav files found")
@@ -213,6 +339,8 @@ def main(argv: Sequence[str] | None = None) -> None:
         preprocess_workers=args.preprocess_workers,
         length_bucket=args.length_bucket,
         sort_by_length=not args.no_sort_by_length,
+        on_error=args.on_error,
+        auto_batch=args.auto_batch,
     )
     if args.output_dir:
         output_dir = Path(args.output_dir)

@@ -1,3 +1,12 @@
+Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0)
+
+This is the human-readable summary of, and the full legal text for, the license
+governing the bundled NISQA model weights in this `weights/` directory
+(`*.npz`, derived from the original TU Berlin NISQA checkpoints). The source
+code of this JAX port is licensed separately under the MIT license (see the
+repository root LICENSE). The weights are NON-COMMERCIAL: commercial use
+requires separate permission from the weights' rights holders.
+
 Attribution-NonCommercial-ShareAlike 4.0 International
 
 =======================================================================

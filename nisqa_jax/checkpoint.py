@@ -3,8 +3,9 @@ from __future__ import annotations
 from dataclasses import asdict
 import hashlib
 import json
+import warnings
 from pathlib import Path
-from typing import Any, TYPE_CHECKING
+from typing import Any, Sequence, TYPE_CHECKING
 
 import jax
 import numpy as np
@@ -274,11 +275,17 @@ def convert_checkpoint(checkpoint_path: str | Path, *, cache_dir: str | Path | N
         cache.mkdir(parents=True, exist_ok=True)
         stem = f"{cfg.cache_key}.v{CONVERSION_VERSION}"
         flat = _flatten(params)
-        np.savez(cache / f"{stem}.npz", **flat)
+        npz_path = cache / f"{stem}.npz"
+        np.savez(npz_path, **flat)
         metadata = {
             "conversion_version": CONVERSION_VERSION,
             "source_path": str(path),
             "source_sha256": digest,
+            # Integrity hash of the .npz bytes; verified on load to detect
+            # tampering/corruption of the weight artifact independent of the
+            # source checkpoint hash. Older artifacts lack this field and the
+            # loader warns (not fails) for backward compatibility.
+            "npz_sha256": _sha256(npz_path),
             "model_name": cfg.model_name,
             "output_names": cfg.output_names,
             "model_config": _config_metadata(cfg),
@@ -286,6 +293,75 @@ def convert_checkpoint(checkpoint_path: str | Path, *, cache_dir: str | Path | N
         }
         (cache / f"{stem}.json").write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n")
     return cfg, params
+
+
+def _verify_artifact_integrity(npz_path: Path, metadata: dict[str, Any]) -> None:
+    """Validate the .npz weight artifact against the JSON ``shape_manifest``.
+
+    Checks (all hard-fail on mismatch — a divergence means the npz and its
+    metadata sidecar are out of sync, which corrupts inference):
+      1. Exact tensor-key equality with ``shape_manifest`` (no missing/extra).
+      2. Each tensor's shape matches the manifest entry.
+      3. Each tensor's dtype is float32-compatible (floating-point).
+      4. The npz SHA256 matches ``npz_sha256`` when present (older artifacts
+         lack this field -> warn, do not fail, for backward compatibility).
+    """
+    manifest = metadata.get("shape_manifest")
+    if not isinstance(manifest, dict):
+        raise ValueError(
+            f"Artifact metadata for {npz_path.name} is missing a 'shape_manifest'; "
+            "the JSON sidecar is malformed. Re-convert the source checkpoint."
+        )
+    # np.load as a context manager so the underlying file handle is closed even
+    # on early validation errors (previously leaked on every load).
+    with np.load(npz_path) as loaded:
+        npz_keys = sorted(loaded.files)
+        manifest_keys = sorted(manifest.keys())
+        if npz_keys != manifest_keys:
+            missing = sorted(set(manifest_keys) - set(npz_keys))
+            extra = sorted(set(npz_keys) - set(manifest_keys))
+            details = []
+            if missing:
+                details.append(f"missing from npz: {missing}")
+            if extra:
+                details.append(f"extra in npz (not in manifest): {extra}")
+            raise ValueError(
+                f"Artifact {npz_path.name} tensor keys do not match shape_manifest ({'; '.join(details)}). "
+                "The npz and JSON sidecar are out of sync; re-convert the source checkpoint."
+            )
+        # Materialize arrays inside the context manager while the file is open.
+        arrays: dict[str, np.ndarray] = {}
+        for name in npz_keys:
+            arr = loaded[name]
+            expected_shape = tuple(manifest[name])
+            if tuple(arr.shape) != expected_shape:
+                raise ValueError(
+                    f"Artifact {npz_path.name} tensor {name!r} shape {tuple(arr.shape)} does not "
+                    f"match manifest {expected_shape}. The npz and JSON sidecar are out of sync; "
+                    "re-convert the source checkpoint."
+                )
+            if not np.issubdtype(arr.dtype, np.floating):
+                raise ValueError(
+                    f"Artifact {npz_path.name} tensor {name!r} has non-float32-compatible dtype "
+                    f"{arr.dtype}; expected a floating-point dtype. The artifact may be corrupted."
+                )
+            arrays[name] = arr.astype(np.float32, copy=True)
+
+    expected_hash = metadata.get("npz_sha256")
+    if expected_hash is None:
+        # Backward compat: shipped artifacts predate the npz_sha256 field.
+        # Warn loudly but still load — only key/shape/dtype mismatches are fatal.
+        warnings.warn(
+            f"Artifact {npz_path.name} metadata lacks 'npz_sha256'; skipping integrity hash "
+            "verification. Re-convert the source checkpoint to embed the hash.",
+            stacklevel=2,
+        )
+    elif _sha256(npz_path) != expected_hash:
+        raise ValueError(
+            f"Artifact {npz_path.name} SHA256 does not match metadata 'npz_sha256'. "
+            "The weight file has been modified or corrupted; re-convert the source checkpoint."
+        )
+    return arrays
 
 
 def load_converted_checkpoint(artifact_path: str | Path) -> tuple[ModelConfig, dict[str, Any]]:
@@ -299,10 +375,10 @@ def load_converted_checkpoint(artifact_path: str | Path) -> tuple[ModelConfig, d
             f"conversion version {CONVERSION_VERSION}. Re-convert the source checkpoint."
         )
     cfg = _config_from_metadata(metadata["model_config"])
-    loaded = np.load(npz_path)
+    arrays = _verify_artifact_integrity(npz_path, metadata)
     params: dict[str, Any] = {}
-    for name in loaded.files:
-        _insert_flat(params, name, loaded[name].astype(np.float32))
+    for name, value in arrays.items():
+        _insert_flat(params, name, value)
     return cfg, _tuplify_numeric_dicts(params)
 
 
@@ -327,3 +403,35 @@ def load_model(
     if not devices:
         raise RuntimeError(f"No JAX devices available for device selector: {device}")
     return NisqaJaxModel(config=cfg, params=params, device=devices[0], precision=precision)
+
+
+def prewarm(
+    model: NisqaJaxModel,
+    batch_sizes: Sequence[int],
+    bucket_lengths: Sequence[int],
+    cache_dir: str | Path | None = None,
+) -> None:
+    """Pre-compile the JIT forward for each ``(batch_size, bucket_length)`` shape.
+
+    Runs a tiny dummy ``predict_segments`` (zeros, no audio) for every shape so
+    the persistent compilation cache is hot before real traffic — the first
+    real call for a given shape otherwise pays the XLA compile cost. Call after
+    ``load_model``. ``cache_dir`` configures the persistent cache if the model
+    was not already loaded with one (idempotent; safe to pass the same value).
+    Cheap: dummy zeros only, output is discarded.
+    """
+    if cache_dir is not None:
+        # Idempotent: no-op if load_model already configured the cache.
+        _configure_persistent_cache(Path(cache_dir).expanduser().resolve() / "jax_compilation_cache")
+    feat = model.config.feature
+    for bs in batch_sizes:
+        if bs < 1:
+            raise ValueError(f"batch_sizes must be >= 1, got {bs}")
+        for bl in bucket_lengths:
+            if bl < 1:
+                raise ValueError(f"bucket_lengths must be >= 1, got {bl}")
+            # Dummy zeros of the exact compiled shape [bs, bl, 1, n_mels, seg_length];
+            # n_wins all = bl so the whole time axis is "valid" (no masking edge cases).
+            x = np.zeros((bs, bl, 1, feat.n_mels, feat.seg_length), dtype=np.float32)
+            n_wins = np.full((bs,), bl, dtype=np.int32)
+            model.predict_segments(x, n_wins)
