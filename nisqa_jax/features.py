@@ -4,6 +4,7 @@ from pathlib import Path
 
 import librosa as lb
 import numpy as np
+import soundfile as sf
 
 from .config import FeatureConfig
 
@@ -15,10 +16,15 @@ def load_melspec(file_path: str | Path, cfg: FeatureConfig, *, channel: int | No
             y, sr = lb.load(path, sr=cfg.sr)
         else:
             y, sr = lb.load(path, sr=cfg.sr, mono=False)
-            if y.ndim > 1:
-                y = y[channel, :]
     except Exception as exc:  # pragma: no cover - preserves original error shape.
         raise ValueError(f"Could not load file {path}") from exc
+
+    # Select channel outside the load try-block so an out-of-range index surfaces as a precise
+    # error instead of being swallowed into a generic "Could not load file".
+    if channel is not None and y.ndim > 1:
+        if channel < 0 or channel >= y.shape[0]:
+            raise ValueError(f"Channel {channel} out of range for file with {y.shape[0]} channels: {path}")
+        y = y[channel, :]
 
     hop_length = int(sr * cfg.hop_length_seconds)
     win_length = int(sr * cfg.win_length_seconds)
@@ -71,9 +77,11 @@ def segment_melspec(
             "Increase max window length ms_max_segments!"
         )
 
-    padded = np.zeros((cfg.max_segments, segments.shape[1], segments.shape[2], segments.shape[3]), dtype=np.float32)
-    padded[:n_wins, :] = segments.astype(np.float32)
-    return padded, np.asarray(n_wins, dtype=np.int32)
+    # Return ONLY the real [n_wins, 1, n_mels, seg_length] segments (no max_segments
+    # zero-padding). Padding is deferred to batch-assembly time in predict_batch so
+    # host-RAM is not wasted on per-file zero buffers (was 3.74MB/file self-att,
+    # 17.28MB/file TTS). predict_file pads trivially to its own n_wins.
+    return np.ascontiguousarray(segments, dtype=np.float32), np.asarray(n_wins, dtype=np.int32)
 
 
 def preprocess_file(
@@ -84,3 +92,39 @@ def preprocess_file(
 ) -> tuple[np.ndarray, np.ndarray]:
     spec = load_melspec(file_path, cfg, channel=channel)
     return segment_melspec(file_path, spec, cfg)
+
+
+def estimate_n_wins(file_path: str | Path, cfg: FeatureConfig) -> int:
+    """Cheap n_wins estimate from the audio header only (no mel-spec decode).
+
+    Reads just the file metadata via ``soundfile.info`` and replicates librosa's
+    framing (``center=True``: ``n_frames = 1 + n_samples // hop``) to derive the
+    segment-window count without loading/decoding audio. Used by the length-aware
+    batch scheduler for *sorting/grouping only*; the actual per-chunk padding max
+    is computed from the real preprocessed ``n_wins``, so an off-by-one here (only
+    possible when ``cfg.sr`` triggers resampling) is harmless for correctness and
+    at worst slightly increases padding. For the shipped checkpoints ``sr=None``
+    (no resampling) so the estimate is exact.
+    """
+    info = sf.info(str(file_path))
+    native_sr = info.samplerate
+    n_samples = info.frames
+    target_sr = cfg.sr if cfg.sr is not None else native_sr
+    if target_sr != native_sr:
+        # librosa resamples to target_sr; sample count is the rounded ratio.
+        n_samples = int(round(n_samples * target_sr / native_sr))
+    hop_length = int(target_sr * cfg.hop_length_seconds)
+    n_frames = 1 + n_samples // hop_length  # center=True reflect padding
+    n_wins_raw = n_frames - (cfg.seg_length - 1)
+    if n_wins_raw < 1:
+        raise ValueError(
+            f"Sample too short. Only {n_frames} frames available but seg_length={cfg.seg_length}. "
+            f"Consider zero padding the audio sample. File: {file_path}"
+        )
+    n_wins = int(np.ceil(n_wins_raw / cfg.seg_hop_length))
+    if cfg.max_segments < n_wins:
+        raise ValueError(
+            f"n_wins {n_wins} > max_length {cfg.max_segments} --- {file_path}. "
+            "Increase max window length ms_max_segments!"
+        )
+    return n_wins

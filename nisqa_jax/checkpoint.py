@@ -8,7 +8,6 @@ from typing import Any, TYPE_CHECKING
 
 import jax
 import numpy as np
-from jax.experimental.compilation_cache import compilation_cache
 
 from .config import FeatureConfig, ModelConfig, config_from_checkpoint_args
 from .model import NisqaJaxModel, Precision, _validate_precision
@@ -17,6 +16,33 @@ if TYPE_CHECKING:  # pragma: no cover
     import torch
 
 CONVERSION_VERSION = 4
+
+# Persistent compilation-cache configuration is applied at most once per process.
+# `is_initialized`/`initialize_cache` are deprecated in JAX 0.4.30 and removed in
+# newer releases; `jax_compilation_cache_dir` is the stable, version-tolerant knob.
+_persistent_cache_configured: bool = False
+
+
+def _configure_persistent_cache(cache_dir: str | Path) -> None:
+    """Idempotently enable JAX's persistent compilation cache.
+
+    JAX defaults ``jax_persistent_cache_min_compile_time_secs=1.0``, which silently
+    drops the sub-second compiles this repo produces, leaving the cache empty. We
+    lower the threshold to 0 and disable the entry-size floor so every compiled
+    program is persisted. Must run before the first compilation of the target
+    program (import order is irrelevant). Safe to call multiple times.
+    """
+    global _persistent_cache_configured
+    if _persistent_cache_configured:
+        return
+    path = str(Path(cache_dir).expanduser().resolve())
+    Path(path).mkdir(parents=True, exist_ok=True)
+    jax.config.update("jax_compilation_cache_dir", path)
+    # Persist short (<1s) compiles instead of filtering them out.
+    jax.config.update("jax_persistent_cache_min_compile_time_secs", 0)
+    # No minimum entry size: cache every program regardless of size.
+    jax.config.update("jax_persistent_cache_min_entry_size_bytes", -1)
+    _persistent_cache_configured = True
 
 
 def _sha256(path: Path) -> str:
@@ -288,8 +314,10 @@ def load_model(
     precision: Precision = "float32",
 ) -> NisqaJaxModel:
     precision = _validate_precision(precision)
-    if cache_dir is not None and not compilation_cache.is_initialized():
-        compilation_cache.initialize_cache(str(Path(cache_dir).expanduser().resolve() / "jax_compilation_cache"))
+    if cache_dir is not None:
+        # Configure before any JIT compilation of the model (load_converted_checkpoint
+        # below does not compile; the first predict_* call does). Idempotent.
+        _configure_persistent_cache(Path(cache_dir).expanduser().resolve() / "jax_compilation_cache")
     path = Path(checkpoint_path).expanduser()
     if path.suffix in {".npz", ".json"}:
         cfg, params = load_converted_checkpoint(path)

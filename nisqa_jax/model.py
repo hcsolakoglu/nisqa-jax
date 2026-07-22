@@ -326,9 +326,37 @@ class NisqaJaxModel:
         return _compute_dtype(self.precision)
 
     def device_segments(self, x: np.ndarray, n_wins: np.ndarray) -> tuple[jnp.ndarray, jnp.ndarray]:
-        max_steps = int(np.max(n_wins))
-        if max_steps < 1:
-            raise ValueError("n_wins must contain at least one valid segment")
+        # Fail-fast validation at the API boundary, before any device transfer.
+        # Rejects malformed shapes/dtypes and zero/negative/over-long windows early with
+        # precise messages, instead of producing NaN (softmax over all -inf) or late
+        # broadcasting/conv errors deep inside the jitted forward pass.
+        if not isinstance(x, np.ndarray) or x.ndim != 5:
+            raise ValueError(
+                f"x must be a 5-D ndarray [batch, steps, 1, n_mels, seg_length], got "
+                f"shape {getattr(x, 'shape', None)}"
+            )
+        if not isinstance(n_wins, np.ndarray) or n_wins.ndim != 1:
+            raise ValueError(f"n_wins must be a 1-D ndarray, got shape {getattr(n_wins, 'shape', None)}")
+        if n_wins.shape[0] != x.shape[0]:
+            raise ValueError(
+                f"len(n_wins)={n_wins.shape[0]} must equal batch size x.shape[0]={x.shape[0]}"
+            )
+        if x.shape[0] == 0:
+            raise ValueError("batch size must be greater than 0")
+        if not np.issubdtype(n_wins.dtype, np.integer):
+            raise ValueError(f"n_wins must have an integer dtype, got {n_wins.dtype}")
+        feat = self.config.feature
+        expected_tail = (1, feat.n_mels, feat.seg_length)
+        if tuple(x.shape[2:]) != expected_tail:
+            raise ValueError(
+                f"x.shape[2:] must be {expected_tail} (1, n_mels, seg_length), got {tuple(x.shape[2:])}"
+            )
+        if int(n_wins.min()) < 1:
+            raise ValueError(f"all n_wins must be >= 1, got min={int(n_wins.min())}")
+        if int(n_wins.max()) > x.shape[1]:
+            raise ValueError(f"all n_wins must be <= x.shape[1]={x.shape[1]}, got max={int(n_wins.max())}")
+
+        max_steps = int(n_wins.max())
         x = x[:, :max_steps]
         x_dev = jax.device_put(jnp.asarray(x, dtype=self.compute_dtype), self.device)
         n_dev = jax.device_put(jnp.asarray(n_wins, dtype=jnp.int32), self.device)

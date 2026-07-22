@@ -71,6 +71,21 @@ scores = predict_file(model, "sample.wav")
 # {'mos': 1.324}
 ```
 
+## Persistent Compilation Cache
+
+Pass `cache_dir` to `load_model` to persist XLA compilations across processes so
+the first inference of a given input shape pays the compile cost only once, ever:
+
+```python
+model = load_model("weights/nisqa_mos_only.npz", device="gpu", cache_dir="weights")
+```
+
+JAX's default 1-second minimum compile-time threshold would silently skip this
+model's sub-second compiles, so `load_model` lowers it to 0 when `cache_dir` is
+set. The cache directory is treated as trusted executable code by JAX: it must
+be writable only by a trusted user (never a shared/world-writable location), as
+a tampered cache entry can execute arbitrary code on cache hit.
+
 ## Convert Original Checkpoints
 
 Conversion is deterministic and produces an `.npz` artifact plus JSON metadata (source hash, conversion version, tensor shape manifest):

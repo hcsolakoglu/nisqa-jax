@@ -71,6 +71,13 @@ def config_from_checkpoint_args(args: dict[str, Any], source_path: Path, sha256:
         raise NotImplementedError("NISQA_DE is unsupported in JAX inference v1")
     if args.get("td_2") not in {None, "skip"}:
         raise NotImplementedError("Only checkpoints with td_2=skip are supported in JAX inference v1")
+    # JAX inference v1 implements single-head self-attention only (see _self_attention_layer:
+    # scale 1/sqrt(d_model), no head reshape). Silently accepting nhead>1 would yield wrong
+    # results for custom multi-head checkpoints, so reject it at the API boundary.
+    if args.get("td_sa_nhead") not in (None, 1):
+        raise NotImplementedError(
+            "multi-head self-attention (td_sa_nhead>1) is not supported in JAX inference v1"
+        )
 
     supported = {
         ("NISQA_DIM", "adapt", "self_att", "att"),
