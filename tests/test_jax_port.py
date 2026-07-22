@@ -201,7 +201,10 @@ def test_segment_melspec_matches_pytorch() -> None:
         cfg.feature.seg_hop_length,
         cfg.feature.max_segments,
     )
-    np.testing.assert_array_equal(jax_x, torch_x.numpy())
+    # segment_melspec now returns the real [n_wins, ...] segments (no max_segments
+    # padding); compare against the unpadded prefix of the PyTorch reference.
+    n = int(jax_n)
+    np.testing.assert_array_equal(jax_x, torch_x.numpy()[:n])
     assert int(jax_n) == int(torch_n)
 
 
@@ -218,7 +221,8 @@ def test_segment_melspec_hop_matches_pytorch() -> None:
         feature.seg_hop_length,
         feature.max_segments,
     )
-    np.testing.assert_array_equal(jax_x, torch_x.numpy())
+    n = int(jax_n)
+    np.testing.assert_array_equal(jax_x, torch_x.numpy()[:n])
     assert int(jax_n) == int(torch_n) == 3
 
 
@@ -298,7 +302,7 @@ def test_masked_padding_and_cropping_are_invariant(artifact: Path) -> None:
 def test_predict_segments_rejects_zero_window_inputs() -> None:
     model = load_model(WEIGHTS_ROOT / "nisqa_mos_only.npz", device="cpu")
     x, _ = _synthetic_segments_from_model(model, steps=2)
-    with pytest.raises(ValueError, match="at least one valid segment"):
+    with pytest.raises(ValueError, match="n_wins must be >= 1"):
         model.predict_segments(x, np.zeros((x.shape[0],), dtype=np.int32))
 
 
@@ -307,20 +311,28 @@ def test_predict_batch_parallel_preprocessing_preserves_order(monkeypatch: pytes
     cfg = model.config.feature
     paths = [Path("first.wav"), Path("second.wav"), Path("third.wav")]
 
+    def fake_estimate_n_wins(path: Path, feature_cfg) -> int:
+        assert feature_cfg == cfg
+        return 4
+
     def fake_preprocess_file(path: Path, feature_cfg, *, channel=None):
         assert feature_cfg == cfg
         value = float(paths.index(Path(path)) + 1)
-        x = np.zeros((cfg.max_segments, 1, cfg.n_mels, cfg.seg_length), dtype=np.float32)
-        x[:4] = value
+        # Unpadded real segments: [n_wins, 1, n_mels, seg_length] (no max_segments pad).
+        x = np.full((4, 1, cfg.n_mels, cfg.seg_length), value, dtype=np.float32)
         return x, np.asarray(4, dtype=np.int32)
 
+    monkeypatch.setattr("nisqa_jax.predict.estimate_n_wins", fake_estimate_n_wins)
     monkeypatch.setattr("nisqa_jax.predict.preprocess_file", fake_preprocess_file)
     serial = predict_batch(model, paths, batch_size=3, preprocess_workers=1)
     parallel = predict_batch(model, paths, batch_size=3, preprocess_workers=2)
     assert parallel["deg"].tolist() == [str(path) for path in paths]
+    # `model` is a string column (checkpoint stem); drop it alongside `deg`
+    # before the numeric allclose comparison.
+    numeric_cols = [c for c in parallel.columns if c not in {"deg", "model"}]
     np.testing.assert_allclose(
-        parallel.drop(columns=["deg"]).to_numpy(),
-        serial.drop(columns=["deg"]).to_numpy(),
+        parallel[numeric_cols].to_numpy(),
+        serial[numeric_cols].to_numpy(),
         rtol=0,
         atol=0,
     )
@@ -330,6 +342,86 @@ def test_predict_batch_rejects_invalid_preprocess_workers() -> None:
     model = load_model(WEIGHTS_ROOT / "nisqa_mos_only.npz", device="cpu")
     with pytest.raises(ValueError, match="preprocess_workers"):
         predict_batch(model, [Path("unused.wav")], preprocess_workers=0)
+
+
+def test_predict_batch_partial_final_chunk_restores_all(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 5 files with bs=2 -> final chunk has 1 real sample; a dummy row is added to
+    # keep batch dim == batch_size, then discarded. Regression: the dummy row's
+    # segment must be cropped to its (n_wins=1) entry or the broadcast fails and
+    # the final real sample is lost.
+    model = load_model(WEIGHTS_ROOT / "nisqa_mos_only.npz", device="cpu")
+    cfg = model.config.feature
+    paths = [Path(f"f{i}.wav") for i in range(5)]
+    n_wins_vals = [10, 3, 7, 1, 5]
+
+    def fake_estimate_n_wins(path: Path, feature_cfg) -> int:
+        assert feature_cfg == cfg
+        return n_wins_vals[paths.index(Path(path))]
+
+    def fake_preprocess_file(path: Path, feature_cfg, *, channel=None):
+        assert feature_cfg == cfg
+        n = n_wins_vals[paths.index(Path(path))]
+        x = np.full((n, 1, cfg.n_mels, cfg.seg_length), float(n), dtype=np.float32)
+        return x, np.asarray(n, dtype=np.int32)
+
+    monkeypatch.setattr("nisqa_jax.predict.estimate_n_wins", fake_estimate_n_wins)
+    monkeypatch.setattr("nisqa_jax.predict.preprocess_file", fake_preprocess_file)
+    df = predict_batch(model, paths, batch_size=2)
+    # All 5 real samples returned (dummy discarded), original order restored.
+    assert len(df) == 5
+    assert df["deg"].tolist() == [str(p) for p in paths]
+
+
+@pytest.mark.parametrize(
+    "artifact,expected_columns",
+    [
+        (
+            WEIGHTS_ROOT / "nisqa.npz",
+            ["deg", "mos_pred", "noi_pred", "dis_pred", "col_pred", "loud_pred", "model"],
+        ),
+        (WEIGHTS_ROOT / "nisqa_mos_only.npz", ["deg", "mos_pred", "model"]),
+        (WEIGHTS_ROOT / "nisqa_tts.npz", ["deg", "mos_pred", "model"]),
+    ],
+)
+def test_predict_batch_csv_columns_match_pytorch(
+    artifact: Path, expected_columns: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # PyTorch NISQA writes `deg, *_pred, model` (NISQA_model.py:76-79,
+    # NISQA_lib.py:1461-1465). The TTS `naturalness` head is reported as
+    # `mos_pred`. Dict API keys (`predict_file`) are covered separately.
+    model = load_model(artifact, device="cpu")
+    cfg = model.config.feature
+    paths = [Path("a.wav"), Path("b.wav")]
+
+    def fake_estimate_n_wins(path: Path, feature_cfg) -> int:
+        assert feature_cfg == cfg
+        return 4
+
+    def fake_preprocess_file(path: Path, feature_cfg, *, channel=None):
+        assert feature_cfg == cfg
+        # Unpadded real segments: [n_wins, 1, n_mels, seg_length] (no max_segments pad).
+        x = np.zeros((4, 1, cfg.n_mels, cfg.seg_length), dtype=np.float32)
+        return x, np.asarray(4, dtype=np.int32)
+
+    monkeypatch.setattr("nisqa_jax.predict.estimate_n_wins", fake_estimate_n_wins)
+    monkeypatch.setattr("nisqa_jax.predict.preprocess_file", fake_preprocess_file)
+    df = predict_batch(model, paths, batch_size=2)
+    assert list(df.columns) == expected_columns
+    assert df["deg"].tolist() == [str(path) for path in paths]
+    assert (df["model"] == model.config.source_path.stem).all()
+
+
+def test_predict_file_dict_api_keeps_output_names(tmp_path: Path) -> None:
+    # Programmatic dict API must keep clean output_names keys (incl. the TTS
+    # `naturalness` alias), independent of the CSV `*_pred` mapping.
+    model = load_model(WEIGHTS_ROOT / "nisqa_tts.npz", device="cpu")
+    cfg = model.config.feature
+    wav = tmp_path / "synthetic.wav"
+    sr = int(cfg.sr or 48000)
+    samples = np.arange(sr * 2, dtype=np.float32) / sr
+    sf.write(wav, 0.05 * np.sin(2 * np.pi * 440 * samples), sr)
+    out = predict_file(model, wav)
+    assert list(out.keys()) == list(model.config.output_names)
 
 
 @pytest.mark.parametrize("checkpoint", SOURCE_CHECKPOINTS)
