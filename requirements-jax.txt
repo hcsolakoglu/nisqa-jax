@@ -1,8 +1,22 @@
 # CPU validation/runtime pins for the JAX inference port.
-# For NVIDIA GPU deployment, install the matching CUDA JAX wheel documented at:
-# https://docs.jax.dev/en/latest/installation.html
-jax[cuda12_pip]==0.4.30
+#
+# jax is pinned to the tested 0.4.30 minor (jax>=0.4.30,<0.5 in pyproject.toml).
+# JAX's compilation-cache config API churns across minors — e.g.
+# `jax.config.initialize_cache`/`is_initialized` were deprecated in 0.4.30 and
+# removed in newer releases; this repo uses the version-tolerant
+# `jax_compilation_cache_dir` knob, but staying within 0.4.x avoids surprise
+# breakage of the persistent cache and JIT behavior. Bump only after re-running
+# the full parity suite.
+#
+# ---- CPU install ----
+jax==0.4.30
 jaxlib==0.4.30
+# ---- NVIDIA GPU install ----
+# For CUDA deployment, replace the two lines above with the CUDA meta-package
+# (brings in the matching jaxlib + CUDA wheels). See:
+# https://docs.jax.dev/en/latest/installation.html
+#   jax[cuda12_pip]==0.4.30
+#   jaxlib==0.4.30
 numpy==1.26.4
 scipy==1.11.4
 librosa==0.10.2.post1

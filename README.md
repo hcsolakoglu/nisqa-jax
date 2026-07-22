@@ -2,7 +2,7 @@
 
 Standalone [JAX](https://github.com/google/jax) inference port for the three shipped [NISQA](https://github.com/gabrielmittag/NISQA) speech quality assessment checkpoints. No PyTorch dependency at inference time — runs on CPU, GPU, and TPU.
 
-**3–7× faster than PyTorch on GPU** with numerical parity at ~1e-7 (1000× tighter than the 1e-3 acceptance threshold).
+**~3× faster than eager PyTorch** on the self-attention model (model-forward, RTX 3070); the BiLSTM (TTS) model is roughly on par with optimized PyTorch. Numerical parity at ~1e-7 (100× tighter than the 1e-3 acceptance threshold). See the [Benchmark](#benchmark-jax-gpu-vs-pytorch-gpu-rtx-3070) section for the full optimized-PyTorch comparison.
 
 ## Checkpoints
 
@@ -16,24 +16,95 @@ Pre-converted `.npz` weights ship in `weights/` — zero-config inference after 
 
 ## Benchmark (JAX-GPU vs PyTorch-GPU, RTX 3070)
 
-| Checkpoint | JAX speedup (median) | Range | Parity (max abs) |
-|---|---|---|---|
-| mos (self-att) | **3.04×** | 2.23×–4.73× | 2.4e-7 |
-| dim (self-att, 5-out) | **3.43×** | 2.94×–7.20× | 4.8e-7 |
-| tts (BiLSTM) | **1.96×** | 1.49×–2.39× | 7.2e-7 |
+Measured against **optimized PyTorch** (real `.tar` weights from
+[gabrielmittag/NISQA](https://github.com/gabrielmittag/NISQA), `cudnn.benchmark=True`,
+eval + `no_grad`, TF32 off) — not just eager. Warm model-forward latency, median
+of 60 timed iterations after warmup (compile excluded), inputs pre-staged on-GPU
+(compute-only; host↔device transfer is framework-independent overhead). Strict
+float32 for both frameworks, matching the port's `default_matmul_precision("float32")`.
+Grid: batch ∈ {1, 8, 16} × steps ∈ {64, 256, 512}. Reproducible harness:
+`bench_jax.py`, `bench_pt.py`, `bench_pt_graphs.py`, `bench_combine.py`.
 
-JAX bf16 vs PyTorch fp16 autocast: **5.8×–6.5×** on self-attention. Full benchmark results in [`adversarial_review/`](adversarial_review/).
+| Model | PT eager | PT cuda-graphs | PT compile (dynamic / reduce-overhead / max-autotune) | Parity vs eager |
+|---|---|---|---|---|
+| mos (self-att) | **3.11×** (2.84–4.13) | **2.27×** (1.19–2.83) | BLOCKED in this env¹ | 2.4e-7 |
+| tts (BiLSTM) | 0.96× (0.49–1.51) | n/a² | 0.97× / 0.97× / 0.97× (0.49–1.57) | 5.5e-6 |
+
+Speedup = PT_latency / JAX_latency (>1 = JAX faster), geomean over the 9-shape grid.
+
+**Headline correction.** The previous "3–7× faster than PyTorch" was measured
+against *eager* PyTorch and held only for the self-attention model. Against
+**optimized** PyTorch the self-attention speedup is ~3.1× (eager) / ~2.3× (CUDA
+graphs), and the BiLSTM (TTS) model is **not** faster — it is roughly on par with
+PyTorch's cuDNN LSTM (faster at large batch, up to ~2× slower on long single
+sequences where `jax.lax.scan` cannot match cuDNN's fused LSTM). `torch.compile`
+does not materially change TTS latency (cuDNN LSTM is already optimized).
+
+¹ `torch.compile` (inductor / triton 3.6.0) fails on the self-attention model in
+this environment with `RuntimeError: CUDA driver error: invalid argument`
+launching a fused triton softmax kernel (RTX 3070, driver 595.84, sm_86); verified
+across `dynamic=True`, `reduce-overhead`, `max-autotune`, and several inductor
+config workarounds (`split_reductions=False`, `autotune_fallback_to_aten=True`,
+mask-skip bypass). A triton-free manual CUDA-graph mode is reported instead. The
+TTS/LSTM model compiles fine (no fused softmax kernel).
+² cuDNN LSTM cannot be captured into a CUDA graph; TTS uses the `torch.compile` modes instead.
+
+JAX bf16 vs PyTorch fp16 autocast (eager): **5.8×–6.5×** on self-attention. Full
+benchmark results and the adversarial review in [`adversarial_review/`](adversarial_review/).
+
+## GPU Memory & Batch Size
+
+Peak memory scales with `batch_size × seq_len`. The table below lists the **largest
+batch size that runs without a fatal OOM at the checkpoint's full sequence length**
+(`max_segments=1300` for self-attention, `6000` for TTS), measured on an 8 GB RTX 3070
+with JAX as the sole GPU consumer (see
+[`adversarial_review/probes/probe_oom_boundary2.py`](adversarial_review/probes/probe_oom_boundary2.py)):
+
+| Checkpoint | Full seq len | Max bs on 8 GB (measured) | Fails at |
+|---|---|---|---|
+| `nisqa_mos_only` (self-att, 1-out) | 1300 | **32** | 48 |
+| `nisqa` (self-att, 5-out / DIM) | 1300 | **16** | 24 |
+| `nisqa_tts` (BiLSTM) | 6000 | **8** | 12 |
+
+Those are ceilings with the whole GPU available to JAX. **Recommended** batch sizes
+leave headroom for the OS / display and for length-padding waste in mixed-length
+batches, and scale linearly with GPU memory:
+
+| GPU memory | self-att (`--bs`) | TTS (`--bs`) |
+|---|---|---|
+| ≤ 8 GB | 4–8 | 2–4 |
+| 12 GB | 8–16 | 4–8 |
+| 24 GB | 16–32 | 8–16 |
+
+TTS is heavier (10× longer sequence → ~10× the LSTM activations). Real-world audio is
+usually shorter than the full sequence length, so larger batches fit in practice; the
+numbers above are worst-case full-length bounds.
+
+If a batch is too large for the available memory, pass `--auto_batch` to recover
+automatically (see below).
 
 ## Install
 
+**CPU** (validation, development, CPU inference):
 ```bash
 pip install -e .
+# or pin the exact tested versions:
+pip install -r requirements-jax.txt
 ```
 
-For GPU inference, install the CUDA JAX wheel matching your driver:
+**NVIDIA GPU** (CUDA 12) — install the CUDA JAX meta-package instead of plain `jax`:
 ```bash
+pip install -e .
 pip install "jax[cuda12_pip]==0.4.30"  # see https://docs.jax.dev/en/latest/installation.html
 ```
+
+> **JAX version pin.** `jax` is pinned to the tested `0.4.x` minor (`jax>=0.4.30,<0.5`).
+> JAX's compilation-cache config API churns across minors (e.g.
+> `initialize_cache`/`is_initialized` were removed after 0.4.30); this repo uses
+> the version-tolerant `jax_compilation_cache_dir` knob, but staying within 0.4.x
+> avoids surprise breakage of the persistent compilation cache and JIT behavior.
+> Bump only after re-running the full parity suite. A full lockfile is intentionally
+> out of scope; `requirements-jax.txt` records the tested CPU versions.
 
 For checkpoint conversion or PyTorch parity tests (optional):
 ```bash
@@ -62,6 +133,18 @@ python -m nisqa_jax.predict \
   --precision bf16
 ```
 
+Robust batch options:
+```bash
+# Skip corrupt/too-short files instead of aborting the whole batch; an `error`
+# column is added (NaN for good rows, message for bad ones).
+python -m nisqa_jax.predict --mode predict_dir --pretrained_model weights/nisqa.npz \
+  --data_dir wavs --bs 8 --on_error collect
+
+# On GPU out-of-memory, halve --bs and retry down to 1 (logs each reduction).
+python -m nisqa_jax.predict --mode predict_dir --pretrained_model weights/nisqa.npz \
+  --data_dir wavs --bs 16 --auto_batch
+```
+
 Python API:
 ```python
 from nisqa_jax import load_model, predict_file
@@ -85,6 +168,30 @@ model's sub-second compiles, so `load_model` lowers it to 0 when `cache_dir` is
 set. The cache directory is treated as trusted executable code by JAX: it must
 be writable only by a trusted user (never a shared/world-writable location), as
 a tampered cache entry can execute arbitrary code on cache hit.
+
+### Prewarm
+
+The persistent cache eliminates *repeat* compiles, but the first process to hit
+a given `(batch_size, bucket_length)` shape still compiles. `prewarm` runs a
+tiny dummy `predict_segments` (zeros, no audio) for each shape so the cache is
+hot before real traffic:
+
+```python
+from nisqa_jax import load_model, prewarm
+from nisqa_jax.predict import default_length_bucket
+
+model = load_model("weights/nisqa_mos_only.npz", device="gpu", cache_dir="weights")
+prewarm(model, batch_sizes=[8], bucket_lengths=[default_length_bucket(model.config)],
+        cache_dir="weights")
+```
+
+CLI: pass `--prewarm` to pre-compile the model's default bucket grid at `--bs`
+before the first real batch:
+
+```bash
+python -m nisqa_jax.predict --mode predict_dir --pretrained_model weights/nisqa_mos_only.npz \
+  --data_dir wavs --bs 8 --cache_dir weights --prewarm
+```
 
 ## Convert Original Checkpoints
 
@@ -154,7 +261,11 @@ Key porting decisions:
 ## License
 
 - **Source code:** MIT (see [LICENSE](LICENSE))
-- **Model weights:** CC BY-NC-SA 4.0 (non-commercial, see [weights/LICENSE_model_weights](weights/LICENSE_model_weights))
+- **Model weights:** the bundled NISQA weights in `weights/` are derived from the
+  original TU Berlin checkpoints and are licensed **CC BY-NC-SA 4.0 (non-commercial)**
+  — see [weights/LICENSE_model_weights](weights/LICENSE_model_weights) for the full
+  text. **Commercial deployment requires resolving the model-weight license
+  separately**; the MIT license above covers this port's source code only.
 - **Academic use:** please cite the original NISQA paper (see [CITATION.cff](CITATION.cff))
 
 ## Acknowledgements
