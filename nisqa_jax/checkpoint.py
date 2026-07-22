@@ -1,20 +1,17 @@
 from __future__ import annotations
 
-from dataclasses import asdict
 import hashlib
 import json
 import warnings
+from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Sequence, TYPE_CHECKING
+from typing import Any, Sequence
 
 import jax
 import numpy as np
 
 from .config import FeatureConfig, ModelConfig, config_from_checkpoint_args
 from .model import NisqaJaxModel, Precision, _validate_precision
-
-if TYPE_CHECKING:  # pragma: no cover
-    import torch
 
 CONVERSION_VERSION = 4
 
@@ -202,7 +199,11 @@ def _convert_state_dict(sd: dict[str, Any], cfg: ModelConfig) -> dict[str, Any]:
 
 def _config_metadata(cfg: ModelConfig) -> dict[str, Any]:
     data = asdict(cfg)
-    data["source_path"] = str(cfg.source_path)
+    # Store ONLY the source filename, not the absolute build-machine path, so
+    # artifacts are portable and do not leak the converter's filesystem layout.
+    # `cache_key`/`_csv_row` use `source_path.stem`, which is identical for a
+    # bare filename; `_config_from_metadata` rewraps it in Path() unchanged.
+    data["source_path"] = cfg.source_path.name
     return data
 
 
@@ -262,7 +263,9 @@ def _tuplify_numeric_dicts(tree: Any) -> Any:
     return tree
 
 
-def convert_checkpoint(checkpoint_path: str | Path, *, cache_dir: str | Path | None = None) -> tuple[ModelConfig, dict[str, Any]]:
+def convert_checkpoint(
+    checkpoint_path: str | Path, *, cache_dir: str | Path | None = None
+) -> tuple[ModelConfig, dict[str, Any]]:
     path = Path(checkpoint_path).expanduser().resolve()
     digest = _sha256(path)
     torch = _torch()
@@ -279,7 +282,7 @@ def convert_checkpoint(checkpoint_path: str | Path, *, cache_dir: str | Path | N
         np.savez(npz_path, **flat)
         metadata = {
             "conversion_version": CONVERSION_VERSION,
-            "source_path": str(path),
+            "source_path": path.name,
             "source_sha256": digest,
             # Integrity hash of the .npz bytes; verified on load to detect
             # tampering/corruption of the weight artifact independent of the
@@ -295,7 +298,7 @@ def convert_checkpoint(checkpoint_path: str | Path, *, cache_dir: str | Path | N
     return cfg, params
 
 
-def _verify_artifact_integrity(npz_path: Path, metadata: dict[str, Any]) -> None:
+def _verify_artifact_integrity(npz_path: Path, metadata: dict[str, Any]) -> dict[str, np.ndarray]:
     """Validate the .npz weight artifact against the JSON ``shape_manifest``.
 
     Checks (all hard-fail on mismatch — a divergence means the npz and its

@@ -35,7 +35,7 @@ SOURCE_CHECKPOINTS = [
     SOURCE_WEIGHTS_ROOT / "nisqa_mos_only.tar",
     SOURCE_WEIGHTS_ROOT / "nisqa_tts.tar",
 ]
-SOURCE_TO_ARTIFACT = dict(zip(SOURCE_CHECKPOINTS, JAX_ARTIFACTS))
+SOURCE_TO_ARTIFACT = dict(zip(SOURCE_CHECKPOINTS, JAX_ARTIFACTS, strict=True))
 
 
 def _parity_tolerance(checkpoint: Path) -> tuple[float, float]:
@@ -297,18 +297,112 @@ def test_jax_staged_outputs_match_pytorch_checkpoint(checkpoint: Path) -> None:
     np.testing.assert_allclose(stages["time_dependency"], expected_td.numpy(), rtol=rtol, atol=atol)
 
 
+def _bf16_tolerance(artifact: Path) -> tuple[float, float]:
+    """Per-checkpoint (rtol, atol) for bf16-vs-fp32 output drift on CPU.
+
+    Measured on CPU (this environment) as the max abs error of bf16 vs fp32
+    outputs over a varied batch (4 seeds x {bs=1/steps=16, bs=2/steps=24,
+    bs=3/steps=32}, all outputs finite):
+
+        nisqa_mos_only (mos): 1.10e-3
+        nisqa          (dim): 2.01e-3
+        nisqa_tts      (tts): 1.23e-2
+
+    These align with prior GPU measurements (mos 6.0e-3, dim 6.2e-3, tts
+    1.28e-2) — tts is essentially identical; mos/dim are slightly lower on CPU.
+    atol is set at ~3-4x the measured drift for a safety margin that absorbs
+    run-to-run jitter without being so loose as to mask a real bf16
+    correctness regression; rtol is set proportionate (outputs are O(1)).
+    """
+    name = artifact.name
+    if name == "nisqa_mos_only.npz":
+        return 4e-3, 4e-3      # ~3.6x measured 1.10e-3
+    if name == "nisqa.npz":
+        return 8e-3, 8e-3      # ~4.0x measured 2.01e-3
+    if name == "nisqa_tts.npz":
+        return 4e-2, 4e-2      # ~3.2x measured 1.23e-2
+    return 8e-2, 8e-2  # fallback for unknown checkpoints
+
+
+def _spearman_rho(a: np.ndarray, b: np.ndarray) -> float:
+    """Spearman rank correlation between two 1-D arrays (numpy, no scipy dep).
+
+    Ties are handled via average ranking. Falls back to scipy if available.
+    """
+    a = np.asarray(a, dtype=np.float64).ravel()
+    b = np.asarray(b, dtype=np.float64).ravel()
+    try:
+        from scipy.stats import spearmanr
+        rho, _ = spearmanr(a, b)
+        return float(rho)
+    except Exception:
+        def rank(x: np.ndarray) -> np.ndarray:
+            order = np.argsort(x, kind="mergesort")
+            ranks = np.empty(len(x), dtype=np.float64)
+            ranks[order] = np.arange(len(x), dtype=np.float64)
+            # Average ranks for ties.
+            i = 0
+            while i < len(x):
+                j = i
+                while j + 1 < len(x) and x[order[j + 1]] == x[order[i]]:
+                    j += 1
+                if j > i:
+                    ranks[order[i:j + 1]] = np.mean(ranks[order[i:j + 1]])
+                i = j + 1
+            return ranks
+        ra, rb = rank(a), rank(b)
+        ca, cb = ra - ra.mean(), rb - rb.mean()
+        denom = np.sqrt(np.sum(ca * ca) * np.sum(cb * cb))
+        return float(np.sum(ca * cb) / denom) if denom else 1.0
+
+
 @pytest.mark.parametrize("artifact", JAX_ARTIFACTS)
 def test_bf16_outputs_are_finite_and_close_to_float32(artifact: Path) -> None:
     fp32_model = load_model(artifact, device=default_test_device(), precision="float32")
     bf16_model = load_model(artifact, device=default_test_device(), precision="bf16")
+    feat = fp32_model.config.feature
+
+    # A small batch of varied inputs (different seeds/shapes) to exercise the
+    # rank-correlation check across a spread of output values, not a single point.
+    fp32_all, bf16_all = [], []
+    max_abs_err = 0.0
+    for seed in range(8):
+        rng = np.random.default_rng(seed)
+        for bs, steps in [(1, 16), (2, 24), (3, 32), (2, 48)]:
+            x = rng.normal(size=(bs, steps, 1, feat.n_mels, feat.seg_length)).astype(np.float32)
+            n_wins = np.asarray([max(1, steps - 5)] * bs, dtype=np.int32)
+            expected = fp32_model.predict_segments(x, n_wins)
+            actual = bf16_model.predict_segments(x, n_wins)
+            assert np.isfinite(actual).all(), f"bf16 output not finite for {artifact.name} seed={seed}"
+            fp32_all.append(expected.ravel())
+            bf16_all.append(actual.ravel())
+            max_abs_err = max(max_abs_err, float(np.max(np.abs(actual - expected))))
+
+    fp32_vec = np.concatenate(fp32_all)
+    bf16_vec = np.concatenate(bf16_all)
+    rho = _spearman_rho(fp32_vec, bf16_vec)
+    # Threshold 0.98: bf16 rounding (~6e-3 drift) swaps ranks between near-tied
+    # values in a narrow synthetic-output spread; measured rho is ~0.983-0.999
+    # across CPU/GPU backends (single-output checkpoints sit lowest because a
+    # 1-D output vector has no cross-dimension spread to stabilise ranks).
+    assert rho >= 0.98, (
+        f"bf16/fp32 Spearman rank correlation {rho:.4f} < 0.98 for {artifact.name} "
+        f"(max_abs_err={max_abs_err:.3e})"
+    )
+
+    rtol, atol = _bf16_tolerance(artifact)
+    # Re-check the single canonical input (matches the historical shape) with
+    # the per-checkpoint tolerance, surfacing the max abs error on failure.
     x, n_wins = _synthetic_segments_from_model(fp32_model, steps=16)
     expected = fp32_model.predict_segments(x, n_wins)
     actual = bf16_model.predict_segments(x, n_wins)
-
     assert bf16_model.precision == "bf16"
     assert actual.dtype == np.float32
     assert np.isfinite(actual).all()
-    np.testing.assert_allclose(actual, expected, rtol=8e-2, atol=8e-2)
+    np.testing.assert_allclose(
+        actual, expected, rtol=rtol, atol=atol,
+        err_msg=f"bf16 drift exceeds tolerance for {artifact.name} (max_abs_err={max_abs_err:.3e})",
+    )
 
 
 @pytest.mark.parametrize("artifact", JAX_ARTIFACTS)

@@ -1,9 +1,8 @@
 """JAX inference port for the shipped NISQA checkpoints."""
 
+from .checkpoint import convert_checkpoint, load_converted_checkpoint, load_model, prewarm
 from .config import FeatureConfig, ModelConfig
 from .model import Precision
-
-from .checkpoint import convert_checkpoint, load_converted_checkpoint, load_model, prewarm
 
 __all__ = [
     "FeatureConfig",

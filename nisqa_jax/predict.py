@@ -142,6 +142,8 @@ def predict_batch(
     """
     if preprocess_workers < 1:
         raise ValueError("preprocess_workers must be >= 1")
+    if batch_size < 1:
+        raise ValueError(f"batch_size must be >= 1, got {batch_size}")
     if on_error not in {"raise", "collect"}:
         raise ValueError(f"on_error must be 'raise' or 'collect', got {on_error!r}")
     paths = [Path(p) for p in wav_paths]
@@ -242,7 +244,7 @@ def predict_batch(
     def predict_prepared(chunk_idx: list[int], prepared) -> None:
         # prepared may contain None placeholders for files that failed in the
         # prefetch path (collect mode); drop them and keep the surviving indices.
-        pairs = [(idx, item) for idx, item in zip(chunk_idx, prepared) if item is not None]
+        pairs = [(idx, item) for idx, item in zip(chunk_idx, prepared, strict=True) if item is not None]
         if not pairs:
             return
         live_idx = [p[0] for p in pairs]

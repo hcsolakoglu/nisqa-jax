@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import argparse
-from concurrent.futures import ThreadPoolExecutor
 import json
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
@@ -89,7 +89,8 @@ def _run_end_to_end(args: argparse.Namespace, paths: list[Path]) -> None:
     def prepare(chunk: list[Path]):
         start = time.perf_counter()
         prepared_with_times = _preprocess_chunk(model, chunk, channel=args.channel)
-        return [item[0] for item in prepared_with_times], time.perf_counter() - start, sum(item[1] for item in prepared_with_times)
+        prep_times = sum(item[1] for item in prepared_with_times)
+        return [item[0] for item in prepared_with_times], time.perf_counter() - start, prep_times
 
     def run_model(prepared) -> None:
         nonlocal model_seconds

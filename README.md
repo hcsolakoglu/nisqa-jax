@@ -1,5 +1,7 @@
 # NISQA-JAX
 
+![CI](https://github.com/hcsolakoglu/nisqa-jax/actions/workflows/ci.yml/badge.svg)
+
 Standalone [JAX](https://github.com/google/jax) inference port for the three shipped [NISQA](https://github.com/gabrielmittag/NISQA) speech quality assessment checkpoints. No PyTorch dependency at inference time — runs on CPU, CUDA GPU, and TPU (see [Backends](#backends-cpu--cuda--tpu) for the per-backend support/tested matrix).
 
 **~3× faster than eager PyTorch** on the self-attention model and **~1.3–1.9× faster than optimized PyTorch** on the BiLSTM (TTS) model (model-forward, RTX 3070). Numerical parity vs the PyTorch CPU reference at 5e-5. See the [Benchmark](#benchmark-jax-gpu-vs-pytorch-gpu-rtx-3070) section for the full optimized-PyTorch comparison.
@@ -184,10 +186,11 @@ persistent cache is supported by JAX (code-audited; not CI-tested here).
 
 ### Caveats
 
-- The benchmark scripts (`bench_compare.py`, `bench.py`, `bench_batching.py`,
-  `adversarial_review/`) compare against CUDA PyTorch and use
-  `torch.cuda` — they are **CUDA-only** and require a CUDA PyTorch install. The
-  core inference and test suite have no such dependency.
+- The benchmark scripts (`bench_compare.py`, `bench.py`,
+  `adversarial_review/probes/bench_batching.py`, `adversarial_review/`) compare
+  against CUDA PyTorch and use `torch.cuda` — they are **CUDA-only** and require
+  a CUDA PyTorch install. The core inference and test suite have no such
+  dependency.
 - `--auto_batch` OOM recovery matches `ResourceExhaustedError` and the
   `RESOURCE_EXHAUSTED` / `out of memory` tokens in the error message, which
   covers GPU and TPU OOM surfaces; CPU does not raise OOM (it over-commits), so
@@ -195,6 +198,15 @@ persistent cache is supported by JAX (code-audited; not CI-tested here).
 - No `XLA_FLAGS` are set or required by this repo.
 
 ## Predict
+
+A `nisqa-jax` console script is installed alongside the package (equivalent to
+`python -m nisqa_jax.predict`):
+
+```bash
+nisqa-jax --mode predict_file \
+  --pretrained_model weights/nisqa_mos_only.npz \
+  --deg sample.wav --precision float32
+```
 
 Single file:
 ```bash
@@ -292,6 +304,24 @@ convert_checkpoint("path/to/nisqa_mos_only.tar", cache_dir="weights")
 pytest -q                    # core JAX tests (standalone, no PyTorch needed)
 pytest -q -m parity          # PyTorch reference parity tests (requires torch)
 ```
+
+## Development
+
+The CI gates (`.github/workflows/ci.yml`) can all be run locally:
+
+```bash
+pip install ruff mypy build pytest
+
+ruff check .                 # lint (config in [tool.ruff] in pyproject.toml)
+mypy nisqa_jax/              # lenient typecheck (excludes tests/bench/probes)
+pytest -q                    # test suite (torch-dependent tests auto-skip)
+python scripts/verify_artifacts.py   # weight checksum + manifest verification
+python -m build              # build sdist + wheel
+```
+
+The bundled weight artifacts are verified against `weights/CHECKSUMS.sha256`
+(SHA-256 of each `.npz`) and each `.json` sidecar's `shape_manifest` on every CI
+run.
 
 ## Benchmark
 

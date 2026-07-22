@@ -56,15 +56,6 @@ def _tuple2(value: Any) -> tuple[int, int] | None:
 
 def config_from_checkpoint_args(args: dict[str, Any], source_path: Path, sha256: str) -> ModelConfig:
     model_name = args["model"]
-    if model_name == "NISQA_DIM":
-        output_names = ("mos", "noi", "dis", "col", "loud")
-    elif source_path.name == "nisqa_tts.tar":
-        output_names = ("naturalness",)
-    elif model_name == "NISQA":
-        output_names = ("mos",)
-    else:
-        raise NotImplementedError(f"Unsupported model architecture for JAX inference v1: {model_name}")
-
     if model_name not in {"NISQA", "NISQA_DIM"}:
         raise NotImplementedError(f"Unsupported model architecture for JAX inference v1: {model_name}")
     if args.get("double_ended") or model_name == "NISQA_DE":
@@ -87,6 +78,24 @@ def config_from_checkpoint_args(args: dict[str, Any], source_path: Path, sha256:
     combo = (model_name, args.get("cnn_model"), args.get("td"), args.get("pool"))
     if combo not in supported:
         raise NotImplementedError(f"Unsupported shipped-checkpoint architecture: {combo}")
+
+    # Output naming is derived from the model IDENTITY (the validated architecture
+    # combo), NOT the checkpoint filename. The TTS/naturalness model is the unique
+    # ("NISQA", "standard", "lstm", "last_step_bi") checkpoint — its head is named
+    # `naturalness`. This is robust to renaming: a renamed nisqa_tts.tar still loads
+    # as naturalness, and a renamed nisqa_mos_only.tar (which is
+    # ("NISQA","adapt","self_att","att")) does NOT become naturalness. Inspected
+    # args: nisqa.tar -> NISQA_DIM/adapt/self_att/att; nisqa_mos_only.tar ->
+    # NISQA/adapt/self_att/att; nisqa_tts.tar -> NISQA/standard/lstm/last_step_bi
+    # (the only one with the LSTM+last_step_bi combo). The `name` training-run
+    # label ('NISQA_TTS_v1') is NOT used — it is a free-form string, not a
+    # structural guarantee.
+    if model_name == "NISQA_DIM":
+        output_names: tuple[str, ...] = ("mos", "noi", "dis", "col", "loud")
+    elif combo == ("NISQA", "standard", "lstm", "last_step_bi"):
+        output_names = ("naturalness",)
+    else:
+        output_names = ("mos",)
 
     feature = FeatureConfig(
         sr=args.get("ms_sr"),
