@@ -2,7 +2,9 @@
 
 Verifies ``load_converted_checkpoint`` rejects corrupted/tampered artifacts
 (wrong shape, missing key, wrong dtype, npz hash mismatch) while still loading
-the shipped artifacts (which lack ``npz_sha256`` -> warn, not fail).
+the shipped artifacts. Since F5 the shipped artifacts embed ``npz_sha256``
+(and store only the bare source filename, no build-machine paths), so they load
+cleanly with no missing-hash warning.
 """
 from __future__ import annotations
 
@@ -54,7 +56,7 @@ def _rebuild_npz(npz: Path, arrays: dict[str, np.ndarray]) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Shipped artifacts: load OK (warn on missing npz_sha256, do not fail)
+# Shipped artifacts: load OK with embedded npz_sha256 (no missing-hash warning)
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("artifact", [
@@ -62,17 +64,45 @@ def _rebuild_npz(npz: Path, arrays: dict[str, np.ndarray]) -> None:
     WEIGHTS_ROOT / "nisqa_mos_only.npz",
     WEIGHTS_ROOT / "nisqa_tts.npz",
 ])
-def test_shipped_artifacts_load_with_missing_hash_warning(artifact: Path) -> None:
+def test_shipped_artifacts_load_clean_with_npz_sha256(artifact: Path) -> None:
     if not artifact.exists():
         pytest.skip(f"weights artifact unavailable: {artifact}")
+    meta = json.loads(artifact.with_suffix(".json").read_text())
+    assert "npz_sha256" in meta and meta["npz_sha256"], (
+        f"shipped artifact {artifact.name} must embed npz_sha256 after F5"
+    )
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         cfg, params = load_converted_checkpoint(artifact)
     assert cfg.output_names  # loaded successfully
-    # A UserWarning about the missing npz_sha256 must be emitted (not fatal).
-    assert any("npz_sha256" in str(w.message) for w in caught), (
-        "expected npz_sha256-missing warning for shipped artifact"
+    # No missing-npz_sha256 warning should be emitted (the hash is now embedded).
+    assert not any("npz_sha256" in str(w.message) for w in caught), (
+        "shipped artifact should not warn about npz_sha256 after F5"
     )
+
+
+# ---------------------------------------------------------------------------
+# F5: no metadata field contains an absolute/build-machine path
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("artifact", [
+    WEIGHTS_ROOT / "nisqa.npz",
+    WEIGHTS_ROOT / "nisqa_mos_only.npz",
+    WEIGHTS_ROOT / "nisqa_tts.npz",
+])
+def test_shipped_metadata_has_no_absolute_paths(artifact: Path) -> None:
+    if not artifact.exists():
+        pytest.skip(f"weights artifact unavailable: {artifact}")
+    js = artifact.with_suffix(".json")
+    raw = js.read_text()
+    meta = json.loads(raw)
+    # No build-machine path leaked anywhere in the JSON text.
+    assert "/media/" not in raw, f"{js.name} contains a /media/ path"
+    # source_path (top-level and nested in model_config) must be a bare filename.
+    for src in (meta.get("source_path"), meta.get("model_config", {}).get("source_path")):
+        assert src is not None, f"{js.name} missing source_path"
+        assert not str(src).startswith("/"), f"{js.name} source_path is absolute: {src!r}"
+        assert "/" not in str(src), f"{js.name} source_path contains a path separator: {src!r}"
 
 
 # ---------------------------------------------------------------------------

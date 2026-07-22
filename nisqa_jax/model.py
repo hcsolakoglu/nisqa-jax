@@ -74,7 +74,7 @@ def _adaptive_max_pool2d_nhwc(x: jnp.ndarray, output_size: tuple[int, int]) -> j
     def regular_bins(in_size: int, out_size: int) -> tuple[int, int] | None:
         starts = [int(np.floor(i * in_size / out_size)) for i in range(out_size)]
         ends = [int(np.ceil((i + 1) * in_size / out_size)) for i in range(out_size)]
-        widths = [end - start for start, end in zip(starts, ends)]
+        widths = [end - start for start, end in zip(starts, ends, strict=True)]
         strides = [starts[i + 1] - starts[i] for i in range(out_size - 1)]
         if len(set(widths)) == 1 and (not strides or len(set(strides)) == 1):
             return widths[0], strides[0] if strides else widths[0]
@@ -143,6 +143,9 @@ def _max_pool2d_nhwc(
 
 
 def _cnn_adapt(params: ArrayTree, x: jnp.ndarray, cfg: ModelConfig) -> jnp.ndarray:
+    # The adapt-CNN path always carries cnn_pool_1/2/3 (validated in
+    # config_from_checkpoint_args); narrow for the type checker + runtime guard.
+    assert cfg.cnn_pool_1 is not None and cfg.cnn_pool_2 is not None and cfg.cnn_pool_3 is not None
     bsz, steps = x.shape[0], x.shape[1]
     x = x.reshape((bsz * steps, x.shape[2], x.shape[3], x.shape[4]))
     x = jnp.transpose(x, (0, 2, 3, 1))
@@ -331,7 +334,9 @@ def _pool_last_step_bi(params: ArrayTree, x: jnp.ndarray, n_wins: jnp.ndarray) -
     return _dense(jnp.concatenate([forward_last, backward_first], axis=-1), params["linear"]).astype(jnp.float32)
 
 
-def forward_stages(params: ArrayTree, x: jnp.ndarray, n_wins: jnp.ndarray, *, cfg: ModelConfig) -> dict[str, jnp.ndarray]:
+def forward_stages(
+    params: ArrayTree, x: jnp.ndarray, n_wins: jnp.ndarray, *, cfg: ModelConfig
+) -> dict[str, jnp.ndarray]:
     n_wins = n_wins.astype(jnp.int32)
     if cfg.cnn_model == "adapt":
         cnn = _cnn_adapt(params["cnn"], x, cfg)

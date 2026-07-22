@@ -7,7 +7,24 @@ name = "nisqa-jax"
 version = "0.1.0"
 description = "Standalone JAX inference port for the shipped NISQA checkpoints"
 readme = "README.md"
+license = { text = "MIT" }
 requires-python = ">=3.10"
+authors = [
+  { name = "Hasan Can Solakoglu", email = "cansolakoglu130@gmail.com" },
+]
+keywords = ["speech-quality", "NISQA", "JAX", "MOS", "inference"]
+classifiers = [
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Operating System :: OS Independent",
+  "Intended Audience :: Science/Research",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+  "Topic :: Multimedia :: Sound/Audio :: Analysis",
+  "Development Status :: 4 - Beta",
+]
 dependencies = [
   # Pin jax to the tested 0.4.x minor. JAX's compilation-cache config API churns
   # across minors (e.g. `initialize_cache`/`is_initialized` were removed after
@@ -27,5 +44,58 @@ convert = ["torch>=2.0"]
 parity = ["torch>=2.0", "pytest>=8"]
 test = ["pytest>=8", "torch>=2.0"]
 
+[project.urls]
+Homepage = "https://github.com/hcsolakoglu/nisqa-jax"
+Repository = "https://github.com/hcsolakoglu/nisqa-jax"
+Issues = "https://github.com/hcsolakoglu/nisqa-jax/issues"
+
+[project.scripts]
+nisqa-jax = "nisqa_jax.predict:main"
+
 [tool.setuptools.packages.find]
-include = ["nisqa_jax*"]
+include = ["nisqa_jax*", "weights*"]
+
+# Bundled pre-converted weights (~3 MB total) ship inside the package so a
+# fresh install has zero-config inference. The .json shape-manifest sidecars
+# and the model-weights LICENSE pointer travel alongside the .npz files.
+[tool.setuptools.package-data]
+weights = ["*.npz", "*.json", "LICENSE_model_weights", "CHECKSUMS.sha256"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+# F401 unused-import is handled per-file below for re-export shims and probes.
+# E731 lambda assignments appear in benchmark/probe scripts intentionally.
+# UP035 (typing.Sequence -> collections.abc) is stylistic modernization only;
+# skipped to avoid churn across the codebase's typing imports.
+select = ["E", "F", "W", "I", "UP", "B"]
+ignore = ["E731", "UP035"]
+
+[tool.ruff.lint.per-file-ignores]
+# __init__ re-exports symbols it does not define.
+"nisqa_jax/__init__.py" = ["F401"]
+# Benchmark / adversarial probe scripts are standalone scratch tooling; keep
+# their imports and style loose rather than mass-reformatting.
+"adversarial_review/**/*.py" = ["F401", "E402", "E701", "E702", "E401", "B023", "B007", "E741", "I001", "E501"]
+"nisqa_jax/bench*.py" = ["E402"]
+# Test files use an intentional import order: stdlib -> sys.path manipulation ->
+# package imports -> local test utils, with `# noqa: E402` on late imports.
+# Re-sorting would misplace those noqa markers, so leave test import order as-is.
+"tests/**/*.py" = ["I001"]
+
+[tool.mypy]
+python_version = "3.10"
+ignore_missing_imports = true
+warn_unused_ignores = false
+warn_redundant_casts = false
+check_untyped_defs = false
+# JAX's pytree/typing surface is noisy and not annotated upstream; lenient mode
+# keeps the gate useful (catches real signature/return drift) without churning
+# the codebase with `# type: ignore` noise.
+exclude = [
+  "tests/",
+  "adversarial_review/",
+  "nisqa_jax/bench.*",
+]

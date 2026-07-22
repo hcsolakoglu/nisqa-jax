@@ -30,7 +30,7 @@
       "mos"
     ],
     "pool": "att",
-    "source_path": "/media/mithex/NVME 2/NISQA PORT PROJECT/nisqa pytorch/weights/nisqa_mos_only.tar",
+    "source_path": "nisqa_mos_only.tar",
     "source_sha256": "16b2632bea0a481b1bba485587a8da2265f2c7797b525712ae0c072986ee783c",
     "td": "self_att",
     "td_2": "skip",
@@ -42,6 +42,7 @@
     "td_sa_num_layers": 2
   },
   "model_name": "NISQA",
+  "npz_sha256": "4ecab66de14ddf27ae7456f9463da835d6d028b440866adf6e4db11654a343c9",
   "output_names": [
     "mos"
   ],
@@ -215,6 +216,6 @@
       64
     ]
   },
-  "source_path": "/media/mithex/NVME 2/NISQA PORT PROJECT/nisqa pytorch/weights/nisqa_mos_only.tar",
+  "source_path": "nisqa_mos_only.tar",
   "source_sha256": "16b2632bea0a481b1bba485587a8da2265f2c7797b525712ae0c072986ee783c"
 }

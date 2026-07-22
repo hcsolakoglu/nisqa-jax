@@ -24,7 +24,7 @@ from nisqa_jax.checkpoint import load_model
 from nisqa_jax.config import FeatureConfig
 from nisqa_jax.predict import _round_up, default_length_bucket
 
-WEIGHTS = Path(__file__).resolve().parent / "weights" / "nisqa_mos_only.npz"
+WEIGHTS = Path(__file__).resolve().parents[2] / "weights" / "nisqa_mos_only.npz"
 
 
 def _round_up_local(value: int, bucket: int) -> int:

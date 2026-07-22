@@ -21,7 +21,7 @@
       "naturalness"
     ],
     "pool": "last_step_bi",
-    "source_path": "/media/mithex/NVME 2/NISQA PORT PROJECT/nisqa pytorch/weights/nisqa_tts.tar",
+    "source_path": "nisqa_tts.tar",
     "source_sha256": "c556a954cd9536360b4fe6f524ad432816509cd22f436f345b281a7851360656",
     "td": "lstm",
     "td_2": "skip",
@@ -33,6 +33,7 @@
     "td_sa_num_layers": null
   },
   "model_name": "NISQA",
+  "npz_sha256": "29c39672624447f3858296ab00436438a29fc5009234883dfa85cc6e9f50da36",
   "output_names": [
     "naturalness"
   ],
@@ -134,6 +135,6 @@
       512
     ]
   },
-  "source_path": "/media/mithex/NVME 2/NISQA PORT PROJECT/nisqa pytorch/weights/nisqa_tts.tar",
+  "source_path": "nisqa_tts.tar",
   "source_sha256": "c556a954cd9536360b4fe6f524ad432816509cd22f436f345b281a7851360656"
 }

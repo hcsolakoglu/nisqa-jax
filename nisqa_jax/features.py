@@ -20,11 +20,15 @@ def load_melspec(file_path: str | Path, cfg: FeatureConfig, *, channel: int | No
         raise ValueError(f"Could not load file {path}") from exc
 
     # Select channel outside the load try-block so an out-of-range index surfaces as a precise
-    # error instead of being swallowed into a generic "Could not load file".
-    if channel is not None and y.ndim > 1:
-        if channel < 0 or channel >= y.shape[0]:
-            raise ValueError(f"Channel {channel} out of range for file with {y.shape[0]} channels: {path}")
-        y = y[channel, :]
+    # error instead of being swallowed into a generic "Could not load file". The guard must
+    # run whenever a channel is requested, even for mono (ndim==1) files: previously the check
+    # sat inside `y.ndim > 1`, so `load_melspec(mono.wav, channel=5)` was silently accepted.
+    if channel is not None:
+        channel_count = y.shape[0] if y.ndim > 1 else 1
+        if channel < 0 or channel >= channel_count:
+            raise ValueError(f"Channel {channel} out of range for file with {channel_count} channels: {path}")
+        if channel_count > 1:
+            y = y[channel, :]
 
     hop_length = int(sr * cfg.hop_length_seconds)
     win_length = int(sr * cfg.win_length_seconds)

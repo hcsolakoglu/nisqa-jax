@@ -93,6 +93,77 @@ def test_config_accepts_missing_nhead() -> None:
 
 
 # ---------------------------------------------------------------------------
+# C1b: model identity (output_names) is derived from the architecture combo,
+# NOT the checkpoint filename (F4 regression).
+# ---------------------------------------------------------------------------
+
+def _tts_args() -> dict:
+    """Args matching the shipped nisqa_tts checkpoint (standard CNN, BiLSTM)."""
+    cfg, _ = load_converted_checkpoint(WEIGHTS_ROOT / "nisqa_tts.npz")
+    f = cfg.feature
+    return {
+        "model": cfg.model_name,
+        "cnn_model": cfg.cnn_model,
+        "td": cfg.td,
+        "td_2": cfg.td_2,
+        "pool": cfg.pool,
+        "cnn_pool_1": cfg.cnn_pool_1,
+        "cnn_pool_2": cfg.cnn_pool_2,
+        "cnn_pool_3": cfg.cnn_pool_3,
+        "td_sa_d_model": cfg.td_sa_d_model,
+        "td_sa_nhead": cfg.td_sa_nhead,
+        "td_sa_num_layers": cfg.td_sa_num_layers,
+        "td_sa_h": cfg.td_sa_h,
+        "td_lstm_h": cfg.td_lstm_h,
+        "td_lstm_bidirectional": cfg.td_lstm_bidirectional,
+        "ms_sr": f.sr,
+        "ms_n_fft": f.n_fft,
+        "ms_hop_length": f.hop_length_seconds,
+        "ms_win_length": f.win_length_seconds,
+        "ms_n_mels": f.n_mels,
+        "ms_fmax": f.fmax,
+        "ms_seg_length": f.seg_length,
+        "ms_seg_hop_length": f.seg_hop_length,
+        "ms_max_segments": f.max_segments,
+    }
+
+
+def test_config_tts_identity_independent_of_filename() -> None:
+    """A renamed nisqa_tts.tar must still load as naturalness."""
+    _skip_if_weights_missing()
+    if not (WEIGHTS_ROOT / "nisqa_tts.npz").exists():
+        pytest.skip("nisqa_tts artifact unavailable")
+    args = _tts_args()
+    # Pass a deliberately misleading filename — the architecture combo is the discriminator.
+    cfg = config_from_checkpoint_args(args, Path("/some/renamed_checkpoint.tar"), "deadbeef")
+    assert cfg.output_names == ("naturalness",)
+
+
+def test_config_mos_only_identity_not_promoted_to_naturalness() -> None:
+    """A renamed nisqa_mos_only.tar must NOT become naturalness (it is self_att)."""
+    _skip_if_weights_missing()
+    args = _base_args(nhead=1)
+    # Pass the tts filename to a mos_only (self_att) args dict — must stay `mos`.
+    cfg = config_from_checkpoint_args(args, Path("/fake/nisqa_tts.tar"), "deadbeef")
+    assert cfg.output_names == ("mos",)
+
+
+def test_config_dim_identity_independent_of_filename() -> None:
+    """NISQA_DIM (5-head) is identified by model_name, not filename."""
+    _skip_if_weights_missing()
+    if not (WEIGHTS_ROOT / "nisqa.npz").exists():
+        pytest.skip("nisqa (DIM) artifact unavailable")
+    cfg, _ = load_converted_checkpoint(WEIGHTS_ROOT / "nisqa.npz")
+    args = _base_args(nhead=1)
+    args["model"] = cfg.model_name  # NISQA_DIM
+    args["cnn_model"] = cfg.cnn_model
+    args["td"] = cfg.td
+    args["pool"] = cfg.pool
+    out = config_from_checkpoint_args(args, Path("/fake/whatever.tar"), "deadbeef")
+    assert out.output_names == ("mos", "noi", "dis", "col", "loud")
+
+
+# ---------------------------------------------------------------------------
 # C2 / C3: device_segments / predict_segments input validation
 # ---------------------------------------------------------------------------
 
@@ -193,6 +264,25 @@ def test_predict_batch_rejects_empty_input() -> None:
 
 
 # ---------------------------------------------------------------------------
+# C4b: predict_batch batch_size validation (early ValueError, not downstream
+# RuntimeError from range(0, n, 0) ZeroDivisionError)
+# ---------------------------------------------------------------------------
+
+def test_predict_batch_rejects_batch_size_zero() -> None:
+    _skip_if_weights_missing()
+    model = load_model(MOS_ONLY, device=default_test_device())
+    with pytest.raises(ValueError, match="batch_size must be >= 1, got 0"):
+        predict_batch(model, [Path("a.wav")], batch_size=0)
+
+
+def test_predict_batch_rejects_negative_batch_size() -> None:
+    _skip_if_weights_missing()
+    model = load_model(MOS_ONLY, device=default_test_device())
+    with pytest.raises(ValueError, match="batch_size must be >= 1, got -3"):
+        predict_batch(model, [Path("a.wav")], batch_size=-3)
+
+
+# ---------------------------------------------------------------------------
 # C5: out-of-range channel produces precise error
 # ---------------------------------------------------------------------------
 
@@ -227,3 +317,46 @@ def test_load_melspec_valid_channel_still_works(tmp_path: Path) -> None:
     spec = load_melspec(wav, feat, channel=1)
     assert spec.ndim == 2
     assert spec.shape[0] == feat.n_mels
+
+
+# ---------------------------------------------------------------------------
+# C5b: mono channel validation (regression — guard previously inside ndim>1)
+# ---------------------------------------------------------------------------
+
+def _write_mono_wav(tmp_path: Path, feat) -> Path:
+    sr = int(feat.sr or 48000)
+    samples = np.arange(sr * 2, dtype=np.float32) / sr
+    wav = tmp_path / "mono.wav"
+    sf.write(wav, 0.05 * np.sin(2 * np.pi * 440 * samples), sr)
+    return wav
+
+
+def test_load_melspec_mono_channel_zero_ok(tmp_path: Path) -> None:
+    """mono + channel=0 must work (select the only channel / no-op)."""
+    _skip_if_weights_missing()
+    model = load_model(MOS_ONLY, device=default_test_device())
+    feat = model.config.feature
+    wav = _write_mono_wav(tmp_path, feat)
+    spec = load_melspec(wav, feat, channel=0)
+    assert spec.ndim == 2
+    assert spec.shape[0] == feat.n_mels
+
+
+def test_load_melspec_mono_channel_one_rejected(tmp_path: Path) -> None:
+    """mono + channel=1 must raise (only channel 0 exists)."""
+    _skip_if_weights_missing()
+    model = load_model(MOS_ONLY, device=default_test_device())
+    feat = model.config.feature
+    wav = _write_mono_wav(tmp_path, feat)
+    with pytest.raises(ValueError, match="Channel 1 out of range for file with 1 channels"):
+        load_melspec(wav, feat, channel=1)
+
+
+def test_load_melspec_mono_negative_channel_rejected(tmp_path: Path) -> None:
+    """mono + negative channel must raise."""
+    _skip_if_weights_missing()
+    model = load_model(MOS_ONLY, device=default_test_device())
+    feat = model.config.feature
+    wav = _write_mono_wav(tmp_path, feat)
+    with pytest.raises(ValueError, match="Channel -1 out of range for file with 1 channels"):
+        load_melspec(wav, feat, channel=-1)
