@@ -1,0 +1,312 @@
+{
+  "conversion_version": 4,
+  "model_config": {
+    "cnn_model": "adapt",
+    "cnn_pool_1": [
+      24,
+      7
+    ],
+    "cnn_pool_2": [
+      12,
+      5
+    ],
+    "cnn_pool_3": [
+      6,
+      3
+    ],
+    "feature": {
+      "fmax": 20000,
+      "hop_length_seconds": 0.01,
+      "max_segments": 1300,
+      "n_fft": 4096,
+      "n_mels": 48,
+      "seg_hop_length": 4,
+      "seg_length": 15,
+      "sr": null,
+      "win_length_seconds": 0.02
+    },
+    "model_name": "NISQA_DIM",
+    "output_names": [
+      "mos",
+      "noi",
+      "dis",
+      "col",
+      "loud"
+    ],
+    "pool": "att",
+    "source_path": "/media/mithex/NVME 2/NISQA PORT PROJECT/nisqa pytorch/weights/nisqa.tar",
+    "source_sha256": "7ec4cf937514dd3f8860b21e66fabd8ca87a168572675ef8d979c4c4ad2e805c",
+    "td": "self_att",
+    "td_2": "skip",
+    "td_lstm_bidirectional": null,
+    "td_lstm_h": null,
+    "td_sa_d_model": 64,
+    "td_sa_h": 64,
+    "td_sa_nhead": 1,
+    "td_sa_num_layers": 2
+  },
+  "model_name": "NISQA_DIM",
+  "output_names": [
+    "mos",
+    "noi",
+    "dis",
+    "col",
+    "loud"
+  ],
+  "shape_manifest": {
+    "cnn/conv1/b": [
+      16
+    ],
+    "cnn/conv1/w": [
+      3,
+      3,
+      1,
+      16
+    ],
+    "cnn/conv2/b": [
+      32
+    ],
+    "cnn/conv2/w": [
+      3,
+      3,
+      16,
+      32
+    ],
+    "cnn/conv3/b": [
+      64
+    ],
+    "cnn/conv3/w": [
+      3,
+      3,
+      32,
+      64
+    ],
+    "cnn/conv4/b": [
+      64
+    ],
+    "cnn/conv4/w": [
+      3,
+      3,
+      64,
+      64
+    ],
+    "cnn/conv5/b": [
+      64
+    ],
+    "cnn/conv5/w": [
+      3,
+      3,
+      64,
+      64
+    ],
+    "cnn/conv6/b": [
+      64
+    ],
+    "cnn/conv6/w": [
+      3,
+      3,
+      64,
+      64
+    ],
+    "pool_layers/0/linear1/b": [
+      128
+    ],
+    "pool_layers/0/linear1/w": [
+      64,
+      128
+    ],
+    "pool_layers/0/linear2/b": [
+      1
+    ],
+    "pool_layers/0/linear2/w": [
+      128,
+      1
+    ],
+    "pool_layers/0/linear3/b": [
+      1
+    ],
+    "pool_layers/0/linear3/w": [
+      64,
+      1
+    ],
+    "pool_layers/1/linear1/b": [
+      128
+    ],
+    "pool_layers/1/linear1/w": [
+      64,
+      128
+    ],
+    "pool_layers/1/linear2/b": [
+      1
+    ],
+    "pool_layers/1/linear2/w": [
+      128,
+      1
+    ],
+    "pool_layers/1/linear3/b": [
+      1
+    ],
+    "pool_layers/1/linear3/w": [
+      64,
+      1
+    ],
+    "pool_layers/2/linear1/b": [
+      128
+    ],
+    "pool_layers/2/linear1/w": [
+      64,
+      128
+    ],
+    "pool_layers/2/linear2/b": [
+      1
+    ],
+    "pool_layers/2/linear2/w": [
+      128,
+      1
+    ],
+    "pool_layers/2/linear3/b": [
+      1
+    ],
+    "pool_layers/2/linear3/w": [
+      64,
+      1
+    ],
+    "pool_layers/3/linear1/b": [
+      128
+    ],
+    "pool_layers/3/linear1/w": [
+      64,
+      128
+    ],
+    "pool_layers/3/linear2/b": [
+      1
+    ],
+    "pool_layers/3/linear2/w": [
+      128,
+      1
+    ],
+    "pool_layers/3/linear3/b": [
+      1
+    ],
+    "pool_layers/3/linear3/w": [
+      64,
+      1
+    ],
+    "pool_layers/4/linear1/b": [
+      128
+    ],
+    "pool_layers/4/linear1/w": [
+      64,
+      128
+    ],
+    "pool_layers/4/linear2/b": [
+      1
+    ],
+    "pool_layers/4/linear2/w": [
+      128,
+      1
+    ],
+    "pool_layers/4/linear3/b": [
+      1
+    ],
+    "pool_layers/4/linear3/w": [
+      64,
+      1
+    ],
+    "time_dependency/input/b": [
+      64
+    ],
+    "time_dependency/input/w": [
+      384,
+      64
+    ],
+    "time_dependency/layers/0/in_proj/b": [
+      192
+    ],
+    "time_dependency/layers/0/in_proj/w": [
+      64,
+      192
+    ],
+    "time_dependency/layers/0/linear1/b": [
+      64
+    ],
+    "time_dependency/layers/0/linear1/w": [
+      64,
+      64
+    ],
+    "time_dependency/layers/0/linear2/b": [
+      64
+    ],
+    "time_dependency/layers/0/linear2/w": [
+      64,
+      64
+    ],
+    "time_dependency/layers/0/norm1/bias": [
+      64
+    ],
+    "time_dependency/layers/0/norm1/scale": [
+      64
+    ],
+    "time_dependency/layers/0/norm2/bias": [
+      64
+    ],
+    "time_dependency/layers/0/norm2/scale": [
+      64
+    ],
+    "time_dependency/layers/0/out/b": [
+      64
+    ],
+    "time_dependency/layers/0/out/w": [
+      64,
+      64
+    ],
+    "time_dependency/layers/1/in_proj/b": [
+      192
+    ],
+    "time_dependency/layers/1/in_proj/w": [
+      64,
+      192
+    ],
+    "time_dependency/layers/1/linear1/b": [
+      64
+    ],
+    "time_dependency/layers/1/linear1/w": [
+      64,
+      64
+    ],
+    "time_dependency/layers/1/linear2/b": [
+      64
+    ],
+    "time_dependency/layers/1/linear2/w": [
+      64,
+      64
+    ],
+    "time_dependency/layers/1/norm1/bias": [
+      64
+    ],
+    "time_dependency/layers/1/norm1/scale": [
+      64
+    ],
+    "time_dependency/layers/1/norm2/bias": [
+      64
+    ],
+    "time_dependency/layers/1/norm2/scale": [
+      64
+    ],
+    "time_dependency/layers/1/out/b": [
+      64
+    ],
+    "time_dependency/layers/1/out/w": [
+      64,
+      64
+    ],
+    "time_dependency/norm1/bias": [
+      64
+    ],
+    "time_dependency/norm1/scale": [
+      64
+    ]
+  },
+  "source_path": "/media/mithex/NVME 2/NISQA PORT PROJECT/nisqa pytorch/weights/nisqa.tar",
+  "source_sha256": "7ec4cf937514dd3f8860b21e66fabd8ca87a168572675ef8d979c4c4ad2e805c"
+}

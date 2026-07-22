@@ -1,0 +1,35 @@
+cff-version: 1.2.0
+message: "If you use this JAX port in your research, please cite both the port and the original NISQA paper."
+title: "NISQA-JAX: Standalone JAX inference port for NISQA speech quality assessment"
+type: software
+authors:
+  - given-names: "Hasan Can"
+    family-names: "Solakoglu"
+    email: cansolakoglu130@gmail.com
+repository-code: "https://github.com/hcsolakoglu/nisqa-jax"
+license: MIT
+version: 0.1.0
+date-released: "2026-07-22"
+keywords:
+  - speech-quality
+  - NISQA
+  - JAX
+  - MOS
+  - inference
+preferred-citation:
+  type: conference-paper
+  title: "NISQA: A Deep CNN-Self-Attention Model for Multidimensional Speech Quality Prediction with Crowdsourced Datasets"
+  authors:
+    - given-names: "Gabriel"
+      family-names: "Mittag"
+    - given-names: "Babak"
+      family-names: "Naderi"
+    - given-names: "Assmaa"
+      family-names: "Chehadi"
+    - given-names: "Sebastian"
+      family-names: "Möller"
+  conference:
+    name: "Proceedings of Interspeech 2021"
+    date: "2021-08-30"
+  year: 2021
+  doi: "10.21437/Interspeech.2021-100"

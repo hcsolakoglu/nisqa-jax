@@ -1,0 +1,139 @@
+{
+  "conversion_version": 4,
+  "model_config": {
+    "cnn_model": "standard",
+    "cnn_pool_1": null,
+    "cnn_pool_2": null,
+    "cnn_pool_3": null,
+    "feature": {
+      "fmax": 8000,
+      "hop_length_seconds": 0.01,
+      "max_segments": 6000,
+      "n_fft": 4096,
+      "n_mels": 48,
+      "seg_hop_length": 1,
+      "seg_length": 15,
+      "sr": null,
+      "win_length_seconds": 0.02
+    },
+    "model_name": "NISQA",
+    "output_names": [
+      "naturalness"
+    ],
+    "pool": "last_step_bi",
+    "source_path": "/media/mithex/NVME 2/NISQA PORT PROJECT/nisqa pytorch/weights/nisqa_tts.tar",
+    "source_sha256": "c556a954cd9536360b4fe6f524ad432816509cd22f436f345b281a7851360656",
+    "td": "lstm",
+    "td_2": "skip",
+    "td_lstm_bidirectional": true,
+    "td_lstm_h": 128,
+    "td_sa_d_model": null,
+    "td_sa_h": null,
+    "td_sa_nhead": null,
+    "td_sa_num_layers": null
+  },
+  "model_name": "NISQA",
+  "output_names": [
+    "naturalness"
+  ],
+  "shape_manifest": {
+    "cnn/conv1/b": [
+      16
+    ],
+    "cnn/conv1/w": [
+      3,
+      3,
+      1,
+      16
+    ],
+    "cnn/conv2/b": [
+      32
+    ],
+    "cnn/conv2/w": [
+      3,
+      3,
+      16,
+      32
+    ],
+    "cnn/conv3/b": [
+      64
+    ],
+    "cnn/conv3/w": [
+      3,
+      3,
+      32,
+      64
+    ],
+    "cnn/conv4/b": [
+      64
+    ],
+    "cnn/conv4/w": [
+      3,
+      3,
+      64,
+      64
+    ],
+    "cnn/conv5/b": [
+      64
+    ],
+    "cnn/conv5/w": [
+      3,
+      3,
+      64,
+      64
+    ],
+    "cnn/conv6/b": [
+      64
+    ],
+    "cnn/conv6/w": [
+      3,
+      3,
+      64,
+      64
+    ],
+    "cnn/fc_out/b": [
+      20
+    ],
+    "cnn/fc_out/w": [
+      768,
+      20
+    ],
+    "pool/linear/b": [
+      1
+    ],
+    "pool/linear/w": [
+      256,
+      1
+    ],
+    "time_dependency/forward/b_hh": [
+      512
+    ],
+    "time_dependency/forward/b_ih": [
+      512
+    ],
+    "time_dependency/forward/w_hh": [
+      128,
+      512
+    ],
+    "time_dependency/forward/w_ih": [
+      20,
+      512
+    ],
+    "time_dependency/reverse/b_hh": [
+      512
+    ],
+    "time_dependency/reverse/b_ih": [
+      512
+    ],
+    "time_dependency/reverse/w_hh": [
+      128,
+      512
+    ],
+    "time_dependency/reverse/w_ih": [
+      20,
+      512
+    ]
+  },
+  "source_path": "/media/mithex/NVME 2/NISQA PORT PROJECT/nisqa pytorch/weights/nisqa_tts.tar",
+  "source_sha256": "c556a954cd9536360b4fe6f524ad432816509cd22f436f345b281a7851360656"
+}

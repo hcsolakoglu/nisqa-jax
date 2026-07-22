@@ -1,0 +1,15 @@
+# CPU validation/runtime pins for the JAX inference port.
+# For NVIDIA GPU deployment, install the matching CUDA JAX wheel documented at:
+# https://docs.jax.dev/en/latest/installation.html
+jax[cuda12_pip]==0.4.30
+jaxlib==0.4.30
+numpy==1.26.4
+scipy==1.11.4
+librosa==0.10.2.post1
+pandas==2.1.4
+soundfile==0.12.1
+pytest>=8
+
+# Optional: needed only to convert original PyTorch .tar checkpoints or run
+# PyTorch reference parity tests / bench_compare.
+# torch>=2.0
