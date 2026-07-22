@@ -18,6 +18,7 @@ from nisqa_jax.config import config_from_checkpoint_args  # noqa: E402
 from nisqa_jax.checkpoint import load_converted_checkpoint, load_model  # noqa: E402
 from nisqa_jax.features import load_melspec  # noqa: E402
 from nisqa_jax.predict import predict_batch  # noqa: E402
+from _testutil import default_test_device  # noqa: E402
 
 
 def _skip_if_weights_missing() -> None:
@@ -97,7 +98,7 @@ def test_config_accepts_missing_nhead() -> None:
 
 def test_predict_segments_rejects_zero_n_wins() -> None:
     _skip_if_weights_missing()
-    model = load_model(MOS_ONLY, device="cpu")
+    model = load_model(MOS_ONLY, device=default_test_device())
     x, _ = _valid_x_n_wins(model)
     with pytest.raises(ValueError, match="n_wins must be >= 1"):
         model.predict_segments(x, np.array([0, 5], dtype=np.int32))
@@ -105,7 +106,7 @@ def test_predict_segments_rejects_zero_n_wins() -> None:
 
 def test_predict_segments_rejects_negative_n_wins() -> None:
     _skip_if_weights_missing()
-    model = load_model(MOS_ONLY, device="cpu")
+    model = load_model(MOS_ONLY, device=default_test_device())
     x, _ = _valid_x_n_wins(model)
     with pytest.raises(ValueError, match="n_wins must be >= 1"):
         model.predict_segments(x, np.array([-3, 5], dtype=np.int32))
@@ -113,7 +114,7 @@ def test_predict_segments_rejects_negative_n_wins() -> None:
 
 def test_predict_segments_rejects_n_wins_exceeding_steps() -> None:
     _skip_if_weights_missing()
-    model = load_model(MOS_ONLY, device="cpu")
+    model = load_model(MOS_ONLY, device=default_test_device())
     x, _ = _valid_x_n_wins(model)
     with pytest.raises(ValueError, match="n_wins must be <= x.shape"):
         model.predict_segments(x, np.array([x.shape[1] + 1, 5], dtype=np.int32))
@@ -121,7 +122,7 @@ def test_predict_segments_rejects_n_wins_exceeding_steps() -> None:
 
 def test_predict_segments_rejects_wrong_rank_x() -> None:
     _skip_if_weights_missing()
-    model = load_model(MOS_ONLY, device="cpu")
+    model = load_model(MOS_ONLY, device=default_test_device())
     feat = model.config.feature
     bad = np.zeros((2, 16, feat.n_mels, feat.seg_length), dtype=np.float32)  # ndim==4
     with pytest.raises(ValueError, match="5-D ndarray"):
@@ -130,7 +131,7 @@ def test_predict_segments_rejects_wrong_rank_x() -> None:
 
 def test_predict_segments_rejects_2d_n_wins() -> None:
     _skip_if_weights_missing()
-    model = load_model(MOS_ONLY, device="cpu")
+    model = load_model(MOS_ONLY, device=default_test_device())
     x, _ = _valid_x_n_wins(model)
     with pytest.raises(ValueError, match="n_wins must be a 1-D ndarray"):
         model.predict_segments(x, np.array([[5], [6]], dtype=np.int32))
@@ -138,7 +139,7 @@ def test_predict_segments_rejects_2d_n_wins() -> None:
 
 def test_predict_segments_rejects_n_wins_length_mismatch() -> None:
     _skip_if_weights_missing()
-    model = load_model(MOS_ONLY, device="cpu")
+    model = load_model(MOS_ONLY, device=default_test_device())
     x, _ = _valid_x_n_wins(model)
     with pytest.raises(ValueError, match="len.n_wins"):
         model.predict_segments(x, np.array([5, 6, 7], dtype=np.int32))
@@ -146,7 +147,7 @@ def test_predict_segments_rejects_n_wins_length_mismatch() -> None:
 
 def test_predict_segments_rejects_float_n_wins() -> None:
     _skip_if_weights_missing()
-    model = load_model(MOS_ONLY, device="cpu")
+    model = load_model(MOS_ONLY, device=default_test_device())
     x, _ = _valid_x_n_wins(model)
     with pytest.raises(ValueError, match="integer dtype"):
         model.predict_segments(x, np.array([5.0, 6.0], dtype=np.float32))
@@ -154,7 +155,7 @@ def test_predict_segments_rejects_float_n_wins() -> None:
 
 def test_predict_segments_rejects_wrong_trailing_shape() -> None:
     _skip_if_weights_missing()
-    model = load_model(MOS_ONLY, device="cpu")
+    model = load_model(MOS_ONLY, device=default_test_device())
     feat = model.config.feature
     bad = np.zeros((2, 16, 2, feat.n_mels, feat.seg_length), dtype=np.float32)  # channel dim 2
     with pytest.raises(ValueError, match=r"x\.shape\[2:\]"):
@@ -163,7 +164,7 @@ def test_predict_segments_rejects_wrong_trailing_shape() -> None:
 
 def test_predict_segments_rejects_empty_batch() -> None:
     _skip_if_weights_missing()
-    model = load_model(MOS_ONLY, device="cpu")
+    model = load_model(MOS_ONLY, device=default_test_device())
     feat = model.config.feature
     x = np.zeros((0, 16, 1, feat.n_mels, feat.seg_length), dtype=np.float32)
     with pytest.raises(ValueError, match="batch size must be greater than 0"):
@@ -173,7 +174,7 @@ def test_predict_segments_rejects_empty_batch() -> None:
 def test_predict_segments_accepts_valid_input() -> None:
     """Sanity: well-formed input still runs and returns finite output."""
     _skip_if_weights_missing()
-    model = load_model(MOS_ONLY, device="cpu")
+    model = load_model(MOS_ONLY, device=default_test_device())
     x, n_wins = _valid_x_n_wins(model)
     out = model.predict_segments(x, n_wins)
     assert out.shape == (2, 1)
@@ -186,7 +187,7 @@ def test_predict_segments_accepts_valid_input() -> None:
 
 def test_predict_batch_rejects_empty_input() -> None:
     _skip_if_weights_missing()
-    model = load_model(MOS_ONLY, device="cpu")
+    model = load_model(MOS_ONLY, device=default_test_device())
     with pytest.raises(ValueError, match="No wav files provided"):
         predict_batch(model, [], batch_size=1)
 
@@ -197,7 +198,7 @@ def test_predict_batch_rejects_empty_input() -> None:
 
 def test_load_melspec_out_of_range_channel_message(tmp_path: Path) -> None:
     _skip_if_weights_missing()
-    model = load_model(MOS_ONLY, device="cpu")
+    model = load_model(MOS_ONLY, device=default_test_device())
     feat = model.config.feature
     sr = int(feat.sr or 48000)
     samples = np.arange(sr * 2, dtype=np.float32) / sr
@@ -213,7 +214,7 @@ def test_load_melspec_out_of_range_channel_message(tmp_path: Path) -> None:
 
 def test_load_melspec_valid_channel_still_works(tmp_path: Path) -> None:
     _skip_if_weights_missing()
-    model = load_model(MOS_ONLY, device="cpu")
+    model = load_model(MOS_ONLY, device=default_test_device())
     feat = model.config.feature
     sr = int(feat.sr or 48000)
     samples = np.arange(sr * 2, dtype=np.float32) / sr

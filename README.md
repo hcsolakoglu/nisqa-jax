@@ -1,8 +1,8 @@
 # NISQA-JAX
 
-Standalone [JAX](https://github.com/google/jax) inference port for the three shipped [NISQA](https://github.com/gabrielmittag/NISQA) speech quality assessment checkpoints. No PyTorch dependency at inference time — runs on CPU, GPU, and TPU.
+Standalone [JAX](https://github.com/google/jax) inference port for the three shipped [NISQA](https://github.com/gabrielmittag/NISQA) speech quality assessment checkpoints. No PyTorch dependency at inference time — runs on CPU, CUDA GPU, and TPU (see [Backends](#backends-cpu--cuda--tpu) for the per-backend support/tested matrix).
 
-**~3× faster than eager PyTorch** on the self-attention model (model-forward, RTX 3070); the BiLSTM (TTS) model is roughly on par with optimized PyTorch. Numerical parity at ~1e-7 (100× tighter than the 1e-3 acceptance threshold). See the [Benchmark](#benchmark-jax-gpu-vs-pytorch-gpu-rtx-3070) section for the full optimized-PyTorch comparison.
+**~3× faster than eager PyTorch** on the self-attention model and **~1.3–1.9× faster than optimized PyTorch** on the BiLSTM (TTS) model (model-forward, RTX 3070). Numerical parity vs the PyTorch CPU reference at 5e-5. See the [Benchmark](#benchmark-jax-gpu-vs-pytorch-gpu-rtx-3070) section for the full optimized-PyTorch comparison.
 
 ## Checkpoints
 
@@ -28,17 +28,22 @@ Grid: batch ∈ {1, 8, 16} × steps ∈ {64, 256, 512}. Reproducible harness:
 | Model | PT eager | PT cuda-graphs | PT compile (dynamic / reduce-overhead / max-autotune) | Parity vs eager |
 |---|---|---|---|---|
 | mos (self-att) | **3.11×** (2.84–4.13) | **2.27×** (1.19–2.83) | BLOCKED in this env¹ | 2.4e-7 |
-| tts (BiLSTM) | 0.96× (0.49–1.51) | n/a² | 0.97× / 0.97× / 0.97× (0.49–1.57) | 5.5e-6 |
+| tts (BiLSTM) | **1.9×** (1.4–2.6) | n/a² | **1.33×** vs max-autotune (0.97–1.70) | 5e-5 (CPU ref)³ |
 
 Speedup = PT_latency / JAX_latency (>1 = JAX faster), geomean over the 9-shape grid.
 
 **Headline correction.** The previous "3–7× faster than PyTorch" was measured
 against *eager* PyTorch and held only for the self-attention model. Against
 **optimized** PyTorch the self-attention speedup is ~3.1× (eager) / ~2.3× (CUDA
-graphs), and the BiLSTM (TTS) model is **not** faster — it is roughly on par with
-PyTorch's cuDNN LSTM (faster at large batch, up to ~2× slower on long single
-sequences where `jax.lax.scan` cannot match cuDNN's fused LSTM). `torch.compile`
-does not materially change TTS latency (cuDNN LSTM is already optimized).
+graphs). The BiLSTM (TTS) model was previously ~0.97× (on par / up to 2× slower
+on long single sequences); after the Goal-B LSTM rewrite — precomputed input
+projection (one batched GEMM outside the scan, as cuDNN does) plus both
+directions fused into a single `lax.scan` over a 2×batch stack — it is now
+**~1.9× vs eager and ~1.33× vs `torch.compile(max-autotune)`** geomean. The
+formerly-worst cell (bs=1/steps=512) went from 0.49× (2× slower) to ~1.3×; the
+heaviest cell (bs=16/steps=512) sits at ~parity (0.97–1.3× across runs, memory-
+pressure variance on the 8 GB card). `torch.compile` does not materially change
+TTS latency (cuDNN LSTM is already optimized).
 
 ¹ `torch.compile` (inductor / triton 3.6.0) fails on the self-attention model in
 this environment with `RuntimeError: CUDA driver error: invalid argument`
@@ -48,6 +53,19 @@ config workarounds (`split_reductions=False`, `autotune_fallback_to_aten=True`,
 mask-skip bypass). A triton-free manual CUDA-graph mode is reported instead. The
 TTS/LSTM model compiles fine (no fused softmax kernel).
 ² cuDNN LSTM cannot be captured into a CUDA graph; TTS uses the `torch.compile` modes instead.
+³ TTS parity is asserted against the PyTorch **CPU** reference at 5e-5 (see the
+"Parity methodology" note below); cuDNN-GPU is the f64-truth outlier and is not
+the parity reference.
+
+**Parity methodology (TTS/BiLSTM).** The parity suite compares the JAX port
+against the PyTorch **CPU** reference at a strict 5e-5 tolerance. A float64
+ground-truth LSTM (same weights) confirms this is the mathematically correct
+check: the JAX `jax.lax.scan` loop and PyTorch's non-fused CPU LSTM reference
+both agree with f64 truth to ~1e-6, while PyTorch's **cuDNN** GPU LSTM is the
+outlier — its fused kernel accumulates the four gates in a different order,
+drifting to ~3.5e-5 at bs=32/sl=64 and ~7e-3 at bs=8/sl=6000 (10–100× the CPU
+paths). The ~1.2e-3 drift once accommodated by a loose 2e-3 tolerance was
+therefore cuDNN's accumulation, not a port bug; the widening has been reverted.
 
 JAX bf16 vs PyTorch fp16 autocast (eager): **5.8×–6.5×** on self-attention. Full
 benchmark results and the adversarial review in [`adversarial_review/`](adversarial_review/).
@@ -110,6 +128,71 @@ For checkpoint conversion or PyTorch parity tests (optional):
 ```bash
 pip install -e '.[convert]'
 ```
+
+## Backends: CPU / CUDA / TPU
+
+The forward graph is pure JAX with no backend-conditional code, so the same
+model runs on CPU, CUDA, and TPU. The table below is explicit about what is
+**empirically tested** in this repo vs **code-audited only** (no TPU hardware in
+CI).
+
+| Backend | Status | Evidence |
+|---|---|---|
+| **CPU** | Tested | Full 62-test suite passes on `jax 0.4.30` CPU (`JAX_PLATFORMS=cpu`); persistent compilation cache verified on CPU. |
+| **CUDA** | Tested | Full 62-test suite passes on `jax 0.4.30` CUDA, RTX 3070 (`JAX_PLATFORMS=cuda`); CPU-vs-CUDA parity measured (max abs diff ≤ 2.7e-6 across all 3 models); persistent cache verified on CUDA. |
+| **TPU** | Code-audited, expected-supported | No TPU hardware in CI. Portability established by code audit + JAX docs: all matmuls/convs/einsums run under `jax.default_matmul_precision("float32")` (f32 accumulation on TPU per JAX docs), every reduction (LayerNorm mean/var, attention + pooling softmax/einsum) casts to f32, NHWC/HWIO conv layout is TPU-optimal, int32 indices throughout (no int64 downcast), and bf16 compute is native on TPU. Not "tested" — run the suite on TPU hardware before production deployment. |
+
+### Device selection
+
+`load_model(..., device=...)` accepts the JAX platform names passed to
+`jax.devices()`:
+
+| `device=` | Resolves to | Notes |
+|---|---|---|
+| `None` (default) | `jax.devices()` — the default backend | On a TPU host this is TPU; on a CUDA host, CUDA; on CPU-only, CPU. |
+| `"cpu"` | CPU backend | Always available (unless `JAX_PLATFORMS` excludes it). |
+| `"gpu"` or `"cuda"` | CUDA backend | Both accepted as aliases. |
+| `"tpu"` | TPU backend | Raises a clear `RuntimeError` naming `libtpu.so` and listing available backends if no TPU is present. |
+
+`predict_segments` stages inputs on `model.device` via explicit `jax.device_put`
+and the jitted forward runs fully on-device. Under `jax.transfer_guard("disallow")`
+the on-device compute raises no implicit-transfer errors (verified on CUDA);
+the only guarded transfer in the full predict path is the single intentional
+device→host retrieval of the output array.
+
+### Precision per backend
+
+| Setting | CPU | CUDA | TPU |
+|---|---|---|---|
+| `precision="float32"` (default) | f32 throughout | f32 throughout | f32 throughout — `default_matmul_precision("float32")` forces f32 matmul/conv accumulation on TPU, so strict mode is portable and bit-stable. |
+| `precision="bf16"` | Works (emulated; slower) | Native on Ampere+ (RTX 3070 verified) | Native — recommended for throughput. bf16 inputs with f32 accumulation (TPU MXU native); ~2× faster than float32. |
+
+Reductions that would lose precision under bf16 accumulation are explicitly cast
+to f32: LayerNorm (`_layer_norm`), attention scores/softmax (`_self_attention_layer`),
+and attention pooling (`_pool_att_ff`). The `default_matmul_precision("float32")`
+context manager wraps the entire forward, so all `jnp.matmul`/`einsum`/`conv`
+calls without an explicit `precision` arg accumulate in f32 on every backend.
+
+### Persistent compilation cache
+
+`cache_dir` enables JAX's persistent compilation cache (see
+[Persistent Compilation Cache](#persistent-compilation-cache)). Verified working
+on **CPU** and **CUDA** (jax 0.4.30) via the prewarm test suite. The cache config
+uses the version-tolerant `jax_compilation_cache_dir` knob (not the
+`initialize_cache`/`is_initialized` API removed after 0.4.30). On **TPU** the
+persistent cache is supported by JAX (code-audited; not CI-tested here).
+
+### Caveats
+
+- The benchmark scripts (`bench_compare.py`, `bench.py`, `bench_batching.py`,
+  `adversarial_review/`) compare against CUDA PyTorch and use
+  `torch.cuda` — they are **CUDA-only** and require a CUDA PyTorch install. The
+  core inference and test suite have no such dependency.
+- `--auto_batch` OOM recovery matches `ResourceExhaustedError` and the
+  `RESOURCE_EXHAUSTED` / `out of memory` tokens in the error message, which
+  covers GPU and TPU OOM surfaces; CPU does not raise OOM (it over-commits), so
+  non-OOM CPU errors never trigger a futile retry.
+- No `XLA_FLAGS` are set or required by this repo.
 
 ## Predict
 
@@ -254,7 +337,7 @@ nisqa_jax/
 Key porting decisions:
 - **BatchNorm folded into conv** at conversion time (no BN at runtime)
 - **Adaptive max pool** uses exact PyTorch bin-edge algorithm
-- **LSTM** via `jax.lax.scan` with invalid-timestep masking (`jnp.where`)
+- **LSTM** via a fused bidirectional `jax.lax.scan` over a 2×batch stack (forward + time-reversed backward) with precomputed input projection (one batched GEMM outside the scan) and invalid-timestep masking (`jnp.where`); per-direction recurrent weights applied via a batched (group=2) GEMM
 - **Self-attention** keeps PyTorch's single `in_proj`, splits q/k/v in forward
 - **Pure JAX** — no Flax dependency, functional pytrees + `NisqaJaxModel` wrapper
 
