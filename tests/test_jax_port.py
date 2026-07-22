@@ -22,6 +22,7 @@ sys.path.insert(0, str(ROOT))
 from nisqa_jax.checkpoint import convert_checkpoint, load_converted_checkpoint, load_model  # noqa: E402
 from nisqa_jax.features import preprocess_file, segment_melspec  # noqa: E402
 from nisqa_jax.predict import predict_batch, predict_file  # noqa: E402
+from _testutil import default_test_device  # noqa: E402
 
 
 JAX_ARTIFACTS = [
@@ -40,15 +41,23 @@ SOURCE_TO_ARTIFACT = dict(zip(SOURCE_CHECKPOINTS, JAX_ARTIFACTS))
 def _parity_tolerance(checkpoint: Path) -> tuple[float, float]:
     """Per-checkpoint (rtol, atol) for PyTorch parity assertions.
 
-    The TTS/BiLSTM checkpoint drifts up to ~1.2e-3 on GPU: PyTorch's cuDNN LSTM
-    uses a fused kernel that accumulates the four gates in a different order than
-    this port's ``jax.lax.scan`` explicit per-timestep loop. That is an
-    accumulation-order difference (0.024% relative on the MOS 1-5 scale), NOT a
-    logic bug (see ``adversarial_review/ISSUES_AND_ROADMAP.md`` ISSUE-08). The
-    self-attention checkpoints match at ~1e-7 and keep the strict 5e-5 bound.
+    All parity assertions compare the JAX port against the PyTorch **CPU**
+    reference (``load_model(..., device="cpu")`` + ``torch_model`` on CPU).
+    This is the mathematically correct check: a float64 ground-truth LSTM
+    (built from the same weights) shows the JAX scan and PyTorch's non-fused
+    CPU LSTM reference path both agree with f64 truth to ~1e-6, while
+    PyTorch's **cuDNN** GPU LSTM is the outlier — its fused kernel accumulates
+    the four gates in a different order, drifting to ~3.5e-5 at bs=32/sl=64
+    and ~7e-3 at bs=8/sl=6000 (10-100x the CPU paths). The ~1.2e-3 drift
+    previously observed was therefore cuDNN's accumulation, NOT a port bug
+    (see ``adversarial_review/ISSUES_AND_ROADMAP.md`` ISSUE-08).
+
+    Measured full-model CPU parity (JAX vs PT-CPU, 6 seeds x 8 shapes incl.
+    bs=32/sl=64, bs=8/sl=128, bs=8/sl=6000) peaks at 8.9e-6. 5e-5 gives a
+    ~5.6x safety margin and matches the self-attention bound. The earlier
+    2e-3 widening (which accommodated the cuDNN-GPU outlier that this CPU
+    test never exercised) is reverted.
     """
-    if checkpoint.name == "nisqa_tts.tar":
-        return 2e-3, 2e-3
     return 5e-5, 5e-5
 
 
@@ -141,7 +150,7 @@ def test_standalone_jax_artifacts_load(artifact: Path) -> None:
     assert cfg.source_sha256
     assert params["cnn"]["conv1"]["w"].shape == (3, 3, 1, 16)
     assert all(f"bn{i}" not in params["cnn"] for i in range(1, 7))
-    model = load_model(artifact, device="cpu")
+    model = load_model(artifact, device=default_test_device())
     assert model.config.output_names == cfg.output_names
 
 
@@ -259,7 +268,7 @@ def test_too_short_sample_error_mentions_path() -> None:
 @pytest.mark.parametrize("checkpoint", SOURCE_CHECKPOINTS)
 def test_jax_forward_matches_pytorch_checkpoint(checkpoint: Path) -> None:
     torch, torch_model, _ = _torch_model(checkpoint)
-    jax_model = load_model(SOURCE_TO_ARTIFACT[checkpoint], device="cpu")
+    jax_model = load_model(SOURCE_TO_ARTIFACT[checkpoint], device=default_test_device())
     x, n_wins = _synthetic_segments_from_model(jax_model)
 
     with torch.no_grad():
@@ -272,7 +281,7 @@ def test_jax_forward_matches_pytorch_checkpoint(checkpoint: Path) -> None:
 @pytest.mark.parametrize("checkpoint", SOURCE_CHECKPOINTS)
 def test_jax_staged_outputs_match_pytorch_checkpoint(checkpoint: Path) -> None:
     torch, torch_model, _ = _torch_model(checkpoint)
-    jax_model = load_model(SOURCE_TO_ARTIFACT[checkpoint], device="cpu")
+    jax_model = load_model(SOURCE_TO_ARTIFACT[checkpoint], device=default_test_device())
     x, n_wins = _synthetic_segments_from_model(jax_model, steps=12)
 
     with torch.no_grad():
@@ -290,8 +299,8 @@ def test_jax_staged_outputs_match_pytorch_checkpoint(checkpoint: Path) -> None:
 
 @pytest.mark.parametrize("artifact", JAX_ARTIFACTS)
 def test_bf16_outputs_are_finite_and_close_to_float32(artifact: Path) -> None:
-    fp32_model = load_model(artifact, device="cpu", precision="float32")
-    bf16_model = load_model(artifact, device="cpu", precision="bf16")
+    fp32_model = load_model(artifact, device=default_test_device(), precision="float32")
+    bf16_model = load_model(artifact, device=default_test_device(), precision="bf16")
     x, n_wins = _synthetic_segments_from_model(fp32_model, steps=16)
     expected = fp32_model.predict_segments(x, n_wins)
     actual = bf16_model.predict_segments(x, n_wins)
@@ -304,7 +313,7 @@ def test_bf16_outputs_are_finite_and_close_to_float32(artifact: Path) -> None:
 
 @pytest.mark.parametrize("artifact", JAX_ARTIFACTS)
 def test_masked_padding_and_cropping_are_invariant(artifact: Path) -> None:
-    model = load_model(artifact, device="cpu")
+    model = load_model(artifact, device=default_test_device())
     x, n_wins = _synthetic_segments_from_model(model, steps=18)
 
     base = model.predict_segments(x, n_wins)
@@ -317,14 +326,14 @@ def test_masked_padding_and_cropping_are_invariant(artifact: Path) -> None:
 
 
 def test_predict_segments_rejects_zero_window_inputs() -> None:
-    model = load_model(WEIGHTS_ROOT / "nisqa_mos_only.npz", device="cpu")
+    model = load_model(WEIGHTS_ROOT / "nisqa_mos_only.npz", device=default_test_device())
     x, _ = _synthetic_segments_from_model(model, steps=2)
     with pytest.raises(ValueError, match="n_wins must be >= 1"):
         model.predict_segments(x, np.zeros((x.shape[0],), dtype=np.int32))
 
 
 def test_predict_batch_parallel_preprocessing_preserves_order(monkeypatch: pytest.MonkeyPatch) -> None:
-    model = load_model(WEIGHTS_ROOT / "nisqa_mos_only.npz", device="cpu")
+    model = load_model(WEIGHTS_ROOT / "nisqa_mos_only.npz", device=default_test_device())
     cfg = model.config.feature
     paths = [Path("first.wav"), Path("second.wav"), Path("third.wav")]
 
@@ -356,7 +365,7 @@ def test_predict_batch_parallel_preprocessing_preserves_order(monkeypatch: pytes
 
 
 def test_predict_batch_rejects_invalid_preprocess_workers() -> None:
-    model = load_model(WEIGHTS_ROOT / "nisqa_mos_only.npz", device="cpu")
+    model = load_model(WEIGHTS_ROOT / "nisqa_mos_only.npz", device=default_test_device())
     with pytest.raises(ValueError, match="preprocess_workers"):
         predict_batch(model, [Path("unused.wav")], preprocess_workers=0)
 
@@ -366,7 +375,7 @@ def test_predict_batch_partial_final_chunk_restores_all(monkeypatch: pytest.Monk
     # keep batch dim == batch_size, then discarded. Regression: the dummy row's
     # segment must be cropped to its (n_wins=1) entry or the broadcast fails and
     # the final real sample is lost.
-    model = load_model(WEIGHTS_ROOT / "nisqa_mos_only.npz", device="cpu")
+    model = load_model(WEIGHTS_ROOT / "nisqa_mos_only.npz", device=default_test_device())
     cfg = model.config.feature
     paths = [Path(f"f{i}.wav") for i in range(5)]
     n_wins_vals = [10, 3, 7, 1, 5]
@@ -406,7 +415,7 @@ def test_predict_batch_csv_columns_match_pytorch(
     # PyTorch NISQA writes `deg, *_pred, model` (NISQA_model.py:76-79,
     # NISQA_lib.py:1461-1465). The TTS `naturalness` head is reported as
     # `mos_pred`. Dict API keys (`predict_file`) are covered separately.
-    model = load_model(artifact, device="cpu")
+    model = load_model(artifact, device=default_test_device())
     cfg = model.config.feature
     paths = [Path("a.wav"), Path("b.wav")]
 
@@ -431,7 +440,7 @@ def test_predict_batch_csv_columns_match_pytorch(
 def test_predict_file_dict_api_keeps_output_names(tmp_path: Path) -> None:
     # Programmatic dict API must keep clean output_names keys (incl. the TTS
     # `naturalness` alias), independent of the CSV `*_pred` mapping.
-    model = load_model(WEIGHTS_ROOT / "nisqa_tts.npz", device="cpu")
+    model = load_model(WEIGHTS_ROOT / "nisqa_tts.npz", device=default_test_device())
     cfg = model.config.feature
     wav = tmp_path / "synthetic.wav"
     sr = int(cfg.sr or 48000)
@@ -444,7 +453,7 @@ def test_predict_file_dict_api_keeps_output_names(tmp_path: Path) -> None:
 @pytest.mark.parametrize("checkpoint", SOURCE_CHECKPOINTS)
 def test_generated_wav_prediction_matches_pytorch(checkpoint: Path, tmp_path: Path) -> None:
     torch, torch_model, _ = _torch_model(checkpoint)
-    jax_model = load_model(SOURCE_TO_ARTIFACT[checkpoint], device="cpu")
+    jax_model = load_model(SOURCE_TO_ARTIFACT[checkpoint], device=default_test_device())
     sr = int(jax_model.config.feature.sr or 48000)
     samples = np.arange(sr * 2, dtype=np.float32) / sr
     wav = tmp_path / f"{checkpoint.stem}.wav"
@@ -461,7 +470,7 @@ def test_generated_wav_prediction_matches_pytorch(checkpoint: Path, tmp_path: Pa
 
 
 def test_stereo_channel_prediction_path(tmp_path: Path) -> None:
-    model = load_model(WEIGHTS_ROOT / "nisqa_mos_only.npz", device="cpu")
+    model = load_model(WEIGHTS_ROOT / "nisqa_mos_only.npz", device=default_test_device())
     sr = int(model.config.feature.sr or 48000)
     samples = np.arange(sr * 2, dtype=np.float32) / sr
     wav = tmp_path / "stereo.wav"
@@ -506,7 +515,7 @@ def _patch_preprocess_with_one_bad(monkeypatch: pytest.MonkeyPatch, cfg, paths, 
 def test_predict_batch_collect_isolates_bad_file(monkeypatch: pytest.MonkeyPatch) -> None:
     # 1 corrupt file among 4 good ones: collect mode must return the 4 good rows
     # and report the bad one with an `error` message, never crashing the batch.
-    model = load_model(WEIGHTS_ROOT / "nisqa_mos_only.npz", device="cpu")
+    model = load_model(WEIGHTS_ROOT / "nisqa_mos_only.npz", device=default_test_device())
     cfg = model.config.feature
     paths = [Path(f"f{i}.wav") for i in range(5)]
     _patch_preprocess_with_one_bad(monkeypatch, cfg, paths, bad_idx=2)
@@ -526,7 +535,7 @@ def test_predict_batch_collect_isolates_bad_file(monkeypatch: pytest.MonkeyPatch
 
 def test_predict_batch_collect_parallel_isolates_bad_file(monkeypatch: pytest.MonkeyPatch) -> None:
     # Same isolation contract under the prefetch (multi-worker) pipeline.
-    model = load_model(WEIGHTS_ROOT / "nisqa_mos_only.npz", device="cpu")
+    model = load_model(WEIGHTS_ROOT / "nisqa_mos_only.npz", device=default_test_device())
     cfg = model.config.feature
     paths = [Path(f"f{i}.wav") for i in range(5)]
     _patch_preprocess_with_one_bad(monkeypatch, cfg, paths, bad_idx=0)
@@ -540,7 +549,7 @@ def test_predict_batch_collect_parallel_isolates_bad_file(monkeypatch: pytest.Mo
 
 def test_predict_batch_raise_names_the_bad_file(monkeypatch: pytest.MonkeyPatch) -> None:
     # raise mode (default) aborts but wraps the exception with the failing path.
-    model = load_model(WEIGHTS_ROOT / "nisqa_mos_only.npz", device="cpu")
+    model = load_model(WEIGHTS_ROOT / "nisqa_mos_only.npz", device=default_test_device())
     cfg = model.config.feature
     paths = [Path("good_a.wav"), Path("bad.wav"), Path("good_b.wav")]
     _patch_preprocess_with_one_bad(monkeypatch, cfg, paths, bad_idx=1)
@@ -552,7 +561,7 @@ def test_predict_batch_raise_names_the_bad_file(monkeypatch: pytest.MonkeyPatch)
 def test_predict_batch_collect_isolates_estimate_failure(monkeypatch: pytest.MonkeyPatch) -> None:
     # A too-short file fails at the header-estimate stage (before any GPU work);
     # collect mode records it and still returns the rest.
-    model = load_model(WEIGHTS_ROOT / "nisqa_mos_only.npz", device="cpu")
+    model = load_model(WEIGHTS_ROOT / "nisqa_mos_only.npz", device=default_test_device())
     cfg = model.config.feature
     paths = [Path("ok1.wav"), Path("tiny.wav"), Path("ok2.wav")]
 
@@ -577,7 +586,7 @@ def test_predict_batch_collect_isolates_estimate_failure(monkeypatch: pytest.Mon
 
 
 def test_predict_batch_rejects_invalid_on_error() -> None:
-    model = load_model(WEIGHTS_ROOT / "nisqa_mos_only.npz", device="cpu")
+    model = load_model(WEIGHTS_ROOT / "nisqa_mos_only.npz", device=default_test_device())
     with pytest.raises(ValueError, match="on_error"):
         predict_batch(model, [Path("x.wav")], on_error="skip")
 
@@ -590,7 +599,7 @@ def test_predict_batch_auto_batch_recovers_from_oom(monkeypatch: pytest.MonkeyPa
     # Simulate a GPU that OOMs above batch_size=2: predict_segments raises an
     # OOM-shaped error when the assembled batch is larger than 2, succeeds
     # otherwise. auto_batch must halve 8 -> 4 -> 2 and return all rows.
-    model = load_model(WEIGHTS_ROOT / "nisqa_mos_only.npz", device="cpu")
+    model = load_model(WEIGHTS_ROOT / "nisqa_mos_only.npz", device=default_test_device())
     cfg = model.config.feature
     paths = [Path(f"f{i}.wav") for i in range(8)]
 
@@ -622,7 +631,7 @@ def test_predict_batch_auto_batch_recovers_from_oom(monkeypatch: pytest.MonkeyPa
 
 def test_predict_batch_auto_batch_off_propagates_oom(monkeypatch: pytest.MonkeyPatch) -> None:
     # Without auto_batch, an OOM-shaped error propagates unchanged.
-    model = load_model(WEIGHTS_ROOT / "nisqa_mos_only.npz", device="cpu")
+    model = load_model(WEIGHTS_ROOT / "nisqa_mos_only.npz", device=default_test_device())
     cfg = model.config.feature
     paths = [Path(f"f{i}.wav") for i in range(4)]
 
@@ -647,7 +656,7 @@ def test_predict_batch_auto_batch_off_propagates_oom(monkeypatch: pytest.MonkeyP
 def test_predict_batch_auto_batch_oom_at_bs1_still_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     # If even a single sample OOMs, auto_batch cannot reduce further and must
     # re-raise (down to bs=1 is the floor).
-    model = load_model(WEIGHTS_ROOT / "nisqa_mos_only.npz", device="cpu")
+    model = load_model(WEIGHTS_ROOT / "nisqa_mos_only.npz", device=default_test_device())
     cfg = model.config.feature
     paths = [Path("f0.wav"), Path("f1.wav")]
 

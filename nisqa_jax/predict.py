@@ -16,15 +16,23 @@ from .model import NisqaJaxModel
 
 logger = logging.getLogger(__name__)
 
-# JAX GPU OOM surfaces as jaxlib.XlaRuntimeError (RESOURCE_EXHAUSTED) or, on
-# some builds, a plain RuntimeError carrying that token. We match broadly on
-# the XLA status token so auto_batch recovery works across jaxlib versions.
+# JAX device OOM surfaces as jaxlib.ResourceExhaustedError, or as a
+# jaxlib.XlaRuntimeError / plain RuntimeError whose message carries the XLA
+# status token ``RESOURCE_EXHAUSTED``. We match on the dedicated
+# ResourceExhaustedError type (always OOM) and on the OOM token in the message
+# (covers XlaRuntimeError and RuntimeError across jaxlib versions and backends:
+# GPU, TPU, and CPU). We intentionally do NOT treat every XlaRuntimeError as
+# OOM: a non-OOM XLA status (INVALID_ARGUMENT, UNIMPLEMENTED, ...) on any
+# backend would otherwise be misclassified and trigger a futile auto_batch
+# retry. The message-token check is backend-portable: TPU/GPU OOM messages
+# contain ``RESOURCE_EXHAUSTED``/``out of memory``; CPU does not raise OOM
+# (it over-commits), so non-OOM CPU errors never match.
 _OOM_TOKENS = ("resourceexhausted", "out of memory", "oom")
 
 
 def _is_oom(exc: BaseException) -> bool:
     name = type(exc).__name__.lower()
-    if "resourceexhausted" in name or "xlaruntimeerror" in name:
+    if "resourceexhausted" in name:
         return True
     return any(tok in str(exc).lower() for tok in _OOM_TOKENS)
 

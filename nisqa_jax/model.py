@@ -200,19 +200,32 @@ def _self_attention(params: ArrayTree, x: jnp.ndarray, n_wins: jnp.ndarray) -> j
     return x
 
 
+# lax.scan unroll factor for the BiLSTM. Tuned over {16,32,64,128} on the
+# bs{1,8,16} x steps{64,256,512} grid (see Goal B benchmark). 32 is best for the
+# originally-slowest bs=1/long-seq cell (the prior 2x gap) and matches the
+# geomean of larger unrolls; 64/128 help only the heaviest bs=16 cell within
+# run-to-run noise, at the cost of larger compile/code size.
+_LSTM_UNROLL = 32
+
+
 def _lstm_direction(params: ArrayTree, x: jnp.ndarray, n_wins: jnp.ndarray, *, reverse: bool) -> jnp.ndarray:
+    """Single-direction LSTM with precomputed input projection.
+
+    The input projection ``X @ W_ih + b_ih`` for ALL timesteps is computed as one
+    batched GEMM outside the scan (exactly what cuDNN does), so the per-step work
+    halves to ``h @ W_hh + b_hh`` only. The gate association
+    ``(x@W_ih + b_ih) + (h@W_hh + b_hh)`` matches the float64 reference order,
+    which is measurably closer to f64 truth than the old
+    ``x@W_ih + h@W_hh + b_ih + b_hh`` (biases added last) form.
+    """
     bsz, steps = x.shape[0], x.shape[1]
     hidden_size = params["w_hh"].shape[0]
 
     def step(carry: tuple[jnp.ndarray, jnp.ndarray], item: tuple[jnp.ndarray, jnp.ndarray]):
         h, c = carry
-        x_t, valid = item
-        gates = (
-            jnp.matmul(x_t, params["w_ih"])
-            + jnp.matmul(h, params["w_hh"])
-            + params["b_ih"]
-            + params["b_hh"]
-        )
+        x_t, valid = item  # x_t is the precomputed input projection [bsz, 4H]
+        # fma-friendly: (h @ W_hh + b_hh) added to the precomputed (x @ W_ih + b_ih)
+        gates = x_t + jnp.matmul(h, params["w_hh"]) + params["b_hh"]
         i, f, g, o = jnp.split(gates, 4, axis=-1)
         c_new = jax.nn.sigmoid(f) * c + jax.nn.sigmoid(i) * jnp.tanh(g)
         h_new = jax.nn.sigmoid(o) * jnp.tanh(c_new)
@@ -224,8 +237,10 @@ def _lstm_direction(params: ArrayTree, x: jnp.ndarray, n_wins: jnp.ndarray, *, r
 
     time = jnp.arange(steps, dtype=n_wins.dtype)
     valid = time[None, :] < n_wins[:, None]
-    seq = jnp.swapaxes(x, 0, 1)
     valid_seq = jnp.swapaxes(valid, 0, 1)
+    # One batched GEMM for the whole sequence's input projection.
+    proj = jnp.matmul(x, params["w_ih"]) + params["b_ih"]  # [bsz, steps, 4H]
+    seq = jnp.swapaxes(proj, 0, 1)  # [steps, bsz, 4H]
     if reverse:
         seq = seq[::-1]
         valid_seq = valid_seq[::-1]
@@ -233,16 +248,70 @@ def _lstm_direction(params: ArrayTree, x: jnp.ndarray, n_wins: jnp.ndarray, *, r
         jnp.zeros((bsz, hidden_size), dtype=x.dtype),
         jnp.zeros((bsz, hidden_size), dtype=x.dtype),
     )
-    _, out = jax.lax.scan(step, init, (seq, valid_seq), unroll=32)
+    _, out = jax.lax.scan(step, init, (seq, valid_seq), unroll=_LSTM_UNROLL)
     if reverse:
         out = out[::-1]
     return jnp.swapaxes(out, 0, 1).astype(x.dtype)
 
 
 def _bidirectional_lstm(params: ArrayTree, x: jnp.ndarray, n_wins: jnp.ndarray) -> jnp.ndarray:
-    fw = _lstm_direction(params["forward"], x, n_wins, reverse=False)
-    bw = _lstm_direction(params["reverse"], x, n_wins, reverse=True)
-    return jnp.concatenate([fw, bw], axis=-1)
+    """Fused BiLSTM: both directions in one ``lax.scan`` over a 2*bsz batch.
+
+    Forward and (time-reversed) backward sequences are stacked along the batch
+    axis so a single scan runs both directions. The per-direction recurrent
+    weights differ, so the step applies them via a batched (group=2) GEMM
+    (``matmul`` of [2, bsz, H] @ [2, H, 4H]). This doubles the per-step GEMM
+    width (better GPU occupancy for small batches) and halves the scan/kernel
+    launch count vs two separate ``_lstm_direction`` scans. Input projections
+    are precomputed as one batched GEMM per direction outside the scan.
+    Masking (valid flags) is stacked and time-reversed consistently for the
+    backward direction, preserving the pack/unpack semantics of the reference.
+    """
+    bsz, steps = x.shape[0], x.shape[1]
+    fp = params["forward"]
+    rp = params["reverse"]
+    hidden_size = fp["w_hh"].shape[0]
+    dtype = x.dtype
+
+    # Precompute input projections for ALL timesteps (one batched GEMM/direction).
+    proj_fw = jnp.swapaxes(jnp.matmul(x, fp["w_ih"]) + fp["b_ih"], 0, 1)  # [steps, bsz, 4H]
+    proj_bw = jnp.swapaxes(jnp.matmul(x, rp["w_ih"]) + rp["b_ih"], 0, 1)[::-1]  # reversed time
+    seq = jnp.concatenate([proj_fw, proj_bw], axis=1)  # [steps, 2*bsz, 4H]
+
+    time = jnp.arange(steps, dtype=n_wins.dtype)
+    valid = time[None, :] < n_wins[:, None]  # [bsz, steps]
+    valid_fw = jnp.swapaxes(valid, 0, 1)  # [steps, bsz]
+    valid_bw = jnp.swapaxes(valid, 0, 1)[::-1]  # backward reads time in reverse
+    valid_seq = jnp.concatenate([valid_fw, valid_bw], axis=1)  # [steps, 2*bsz]
+
+    # Batched recurrent weights/biases: group dim 2 = (forward, backward).
+    w_hh = jnp.stack([fp["w_hh"], rp["w_hh"]], axis=0)  # [2, H, 4H]
+    b_hh = jnp.stack([fp["b_hh"], rp["b_hh"]], axis=0)  # [2, 4H]
+
+    def step(carry: tuple[jnp.ndarray, jnp.ndarray], item: tuple[jnp.ndarray, jnp.ndarray]):
+        h, c = carry  # each [2*bsz, H]
+        x_t, valid = item  # [2*bsz, 4H], [2*bsz]
+        h_g = h.reshape(2, bsz, hidden_size)
+        # Per-direction h @ W_hh + b_hh via one batched GEMM, then add precomputed input proj.
+        hh = jnp.matmul(h_g, w_hh) + b_hh[:, None, :]  # [2, bsz, 4H]
+        gates = x_t + hh.reshape(2 * bsz, 4 * hidden_size)
+        i, f, g, o = jnp.split(gates, 4, axis=-1)
+        c_new = jax.nn.sigmoid(f) * c + jax.nn.sigmoid(i) * jnp.tanh(g)
+        h_new = jax.nn.sigmoid(o) * jnp.tanh(c_new)
+        valid = valid[:, None]
+        h = jnp.where(valid, h_new, h)
+        c = jnp.where(valid, c_new, c)
+        out = jnp.where(valid, h, jnp.zeros_like(h))
+        return (h, c), out
+
+    init = (
+        jnp.zeros((2 * bsz, hidden_size), dtype=dtype),
+        jnp.zeros((2 * bsz, hidden_size), dtype=dtype),
+    )
+    _, out = jax.lax.scan(step, init, (seq, valid_seq), unroll=_LSTM_UNROLL)
+    out_fw = jnp.swapaxes(out[:, :bsz, :], 0, 1)  # [bsz, steps, H]
+    out_bw = jnp.swapaxes(out[:, bsz:, :][::-1], 0, 1)  # un-reverse time -> [bsz, steps, H]
+    return jnp.concatenate([out_fw, out_bw], axis=-1).astype(x.dtype)
 
 
 def _pool_att_ff(params: ArrayTree, x: jnp.ndarray, n_wins: jnp.ndarray) -> jnp.ndarray:

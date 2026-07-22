@@ -24,6 +24,7 @@ sys.path.insert(0, str(ROOT))
 
 from nisqa_jax.checkpoint import load_model, prewarm  # noqa: E402
 from nisqa_jax.predict import default_length_bucket  # noqa: E402
+from _testutil import default_test_device  # noqa: E402
 
 
 def _skip_if_weights_missing() -> None:
@@ -50,6 +51,13 @@ def test_prewarm_runs_and_populates_cache(tmp_path: Path) -> None:
     # test may have already pinned the cache to a different (now-deleted) dir.
     # A fresh process guarantees this cache_dir is the first/only one configured.
     cache_dir = tmp_path / "cache"
+    # The prewarm subprocess always runs on CPU: the CPU backend is always
+    # present in jaxlib (a fresh process can force JAX_PLATFORMS=cpu even when
+    # the parent is CUDA-only), and these tests validate persistent-cache
+    # mechanics (backend-agnostic) via a fresh process. Running the subprocess
+    # on GPU would contend with the parent process's GPU memory on
+    # memory-constrained cards (e.g. 8 GB RTX 3070: cuDNN handle init fails
+    # with CUDNN_STATUS_INTERNAL_ERROR when the parent holds most of VRAM).
     script = textwrap.dedent(
         f"""
         import sys, json
@@ -79,7 +87,7 @@ def test_prewarm_runs_and_populates_cache(tmp_path: Path) -> None:
 
 def test_prewarm_rejects_invalid_sizes(tmp_path: Path) -> None:
     _skip_if_weights_missing()
-    model = load_model(MOS_ONLY_NPZ, device="cpu", cache_dir=tmp_path / "c")
+    model = load_model(MOS_ONLY_NPZ, device=default_test_device(), cache_dir=tmp_path / "c")
     bl = default_length_bucket(model.config)
     with pytest.raises(ValueError, match="batch_sizes must be >= 1"):
         prewarm(model, [0], [bl])
@@ -90,7 +98,7 @@ def test_prewarm_rejects_invalid_sizes(tmp_path: Path) -> None:
 def test_prewarm_then_predict_matches_cold(tmp_path: Path) -> None:
     """Prewarm must not change numerical output vs a cold predict."""
     _skip_if_weights_missing()
-    model = load_model(MOS_ONLY_NPZ, device="cpu", cache_dir=tmp_path / "c")
+    model = load_model(MOS_ONLY_NPZ, device=default_test_device(), cache_dir=tmp_path / "c")
     bl = default_length_bucket(model.config)
     x, n_wins = _synthetic(model, bs=2, steps=bl)
     cold = model.predict_segments(x, n_wins)  # compiles
@@ -130,6 +138,9 @@ _TIMING_SCRIPT = textwrap.dedent(
 
 
 def _run_timing_subprocess(mode: str, cache_dir: Path, bs: int, bl: int) -> dict:
+    # Subprocess runs on CPU (see test_prewarm_runs_and_populates_cache): the
+    # CPU backend is always available in a fresh process and this avoids GPU
+    # memory contention with the parent process on memory-constrained cards.
     env = dict(os.environ)
     env["JAX_PLATFORMS"] = "cpu"
     # Force a fresh process; disable in-process cache reuse noise.
@@ -151,7 +162,7 @@ def test_prewarm_eliminates_compile_stall(tmp_path: Path) -> None:
     The warm predict must be substantially faster than the cold compile.
     """
     _skip_if_weights_missing()
-    model = load_model(MOS_ONLY_NPZ, device="cpu")  # just to get the bucket size
+    model = load_model(MOS_ONLY_NPZ, device=default_test_device())  # just to get the bucket size
     bl = default_length_bucket(model.config)
     bs = 2
 
