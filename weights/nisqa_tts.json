@@ -1,5 +1,6 @@
 {
   "conversion_version": 4,
+  "metadata_sha256": "2f65ccfe39ac264b82a9d03b5f955b7727bae442439ce09fccd7e5feafe52c40",
   "model_config": {
     "cnn_model": "standard",
     "cnn_pool_1": null,
@@ -21,6 +22,7 @@
       "naturalness"
     ],
     "pool": "last_step_bi",
+    "source_name": "NISQA_TTS_v1",
     "source_path": "nisqa_tts.tar",
     "source_sha256": "c556a954cd9536360b4fe6f524ad432816509cd22f436f345b281a7851360656",
     "td": "lstm",
@@ -135,6 +137,7 @@
       512
     ]
   },
+  "source_name": "NISQA_TTS_v1",
   "source_path": "nisqa_tts.tar",
   "source_sha256": "c556a954cd9536360b4fe6f524ad432816509cd22f436f345b281a7851360656"
 }

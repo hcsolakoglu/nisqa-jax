@@ -1,5 +1,6 @@
 {
   "conversion_version": 4,
+  "metadata_sha256": "1f82a27952721680acc2bb6376c8451ae5839955dd556aac9aa5e8cd38d2648a",
   "model_config": {
     "cnn_model": "adapt",
     "cnn_pool_1": [
@@ -34,6 +35,7 @@
       "loud"
     ],
     "pool": "att",
+    "source_name": "NISQAv2",
     "source_path": "nisqa.tar",
     "source_sha256": "7ec4cf937514dd3f8860b21e66fabd8ca87a168572675ef8d979c4c4ad2e805c",
     "td": "self_att",
@@ -308,6 +310,7 @@
       64
     ]
   },
+  "source_name": "NISQAv2",
   "source_path": "nisqa.tar",
   "source_sha256": "7ec4cf937514dd3f8860b21e66fabd8ca87a168572675ef8d979c4c4ad2e805c"
 }

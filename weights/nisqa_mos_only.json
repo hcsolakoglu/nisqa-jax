@@ -1,5 +1,6 @@
 {
   "conversion_version": 4,
+  "metadata_sha256": "827c45c398fb0825611efb1ef33382e93d02c03ecb3ca23b4a2b7a3db95fba18",
   "model_config": {
     "cnn_model": "adapt",
     "cnn_pool_1": [
@@ -30,6 +31,7 @@
       "mos"
     ],
     "pool": "att",
+    "source_name": "NISQAv2_mos_only",
     "source_path": "nisqa_mos_only.tar",
     "source_sha256": "16b2632bea0a481b1bba485587a8da2265f2c7797b525712ae0c072986ee783c",
     "td": "self_att",
@@ -216,6 +218,7 @@
       64
     ]
   },
+  "source_name": "NISQAv2_mos_only",
   "source_path": "nisqa_mos_only.tar",
   "source_sha256": "16b2632bea0a481b1bba485587a8da2265f2c7797b525712ae0c072986ee783c"
 }
