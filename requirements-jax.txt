@@ -18,7 +18,7 @@ jaxlib==0.4.30
 #   jax[cuda12_pip]==0.4.30
 #   jaxlib==0.4.30
 numpy==1.26.4
-scipy==1.11.4
+scipy==1.15.3
 librosa==0.10.2.post1
 pandas==2.1.4
 soundfile==0.12.1
