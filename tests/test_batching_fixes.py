@@ -32,9 +32,11 @@ from nisqa_jax.model import NisqaJaxModel  # noqa: E402
 from nisqa_jax.predict import (  # noqa: E402
     _cost_aware_batch_size,
     _cost_aware_chunks,
+    _cost_exponent,
     _fixed_chunks,
     _model_identity,
     _validate_batch_size,
+    _validate_positive_int,
     default_prewarm_grid,
     predict_batch,
 )
@@ -279,6 +281,70 @@ def test_predict_batch_rejects_float_batch_size() -> None:
         predict_batch(model, [Path("a.wav")], batch_size=2.0)  # type: ignore[arg-type]
 
 
+def test_validate_positive_int_rejects_bool() -> None:
+    with pytest.raises(ValueError, match="must be an int"):
+        _validate_positive_int(True, "length_bucket")
+    with pytest.raises(ValueError, match="must be an int"):
+        _validate_positive_int(False, "preprocess_workers")
+
+
+def test_validate_positive_int_rejects_float() -> None:
+    with pytest.raises(ValueError, match="must be an int"):
+        _validate_positive_int(2.0, "length_bucket")
+
+
+def test_validate_positive_int_rejects_zero() -> None:
+    with pytest.raises(ValueError, match="must be >= 1"):
+        _validate_positive_int(0, "preprocess_workers")
+
+
+def test_validate_positive_int_accepts_one() -> None:
+    assert _validate_positive_int(1, "length_bucket") == 1
+    assert _validate_positive_int(64, "preprocess_workers") == 64
+
+
+def test_predict_batch_rejects_bool_length_bucket() -> None:
+    _skip_if_weights_missing()
+    model = _model()
+    with pytest.raises(ValueError, match="length_bucket must be an int"):
+        predict_batch(model, [Path("a.wav")], length_bucket=True)  # type: ignore[arg-type]
+
+
+def test_predict_batch_rejects_float_length_bucket() -> None:
+    _skip_if_weights_missing()
+    model = _model()
+    with pytest.raises(ValueError, match="length_bucket must be an int"):
+        predict_batch(model, [Path("a.wav")], length_bucket=32.0)  # type: ignore[arg-type]
+
+
+def test_predict_batch_rejects_zero_length_bucket() -> None:
+    _skip_if_weights_missing()
+    model = _model()
+    with pytest.raises(ValueError, match="length_bucket must be >= 1"):
+        predict_batch(model, [Path("a.wav")], length_bucket=0)
+
+
+def test_predict_batch_rejects_bool_preprocess_workers() -> None:
+    _skip_if_weights_missing()
+    model = _model()
+    with pytest.raises(ValueError, match="preprocess_workers must be an int"):
+        predict_batch(model, [Path("a.wav")], preprocess_workers=True)  # type: ignore[arg-type]
+
+
+def test_predict_batch_rejects_float_preprocess_workers() -> None:
+    _skip_if_weights_missing()
+    model = _model()
+    with pytest.raises(ValueError, match="preprocess_workers must be an int"):
+        predict_batch(model, [Path("a.wav")], preprocess_workers=2.0)  # type: ignore[arg-type]
+
+
+def test_predict_batch_rejects_zero_preprocess_workers() -> None:
+    _skip_if_weights_missing()
+    model = _model()
+    with pytest.raises(ValueError, match="preprocess_workers must be >= 1"):
+        predict_batch(model, [Path("a.wav")], preprocess_workers=0)
+
+
 def test_predict_batch_clamps_huge_batch_size(monkeypatch: pytest.MonkeyPatch) -> None:
     """batch_size >> len(paths) must not allocate a huge dummy batch.
 
@@ -339,6 +405,47 @@ def test_cost_aware_batch_size_isolates_outlier() -> None:
     assert _cost_aware_batch_size(32, 32, 32) == 32
     # 64-length (2x median) -> bs=16 (halved one power of two).
     assert _cost_aware_batch_size(64, 32, 32) == 16
+
+
+def test_cost_exponent_model_aware() -> None:
+    """self_att -> 2 (B*L^2), lstm -> 1 (B*L)."""
+    assert _cost_exponent("self_att") == 2
+    assert _cost_exponent("lstm") == 1
+
+
+def test_cost_aware_self_att_isolates_more_aggressively_than_lstm() -> None:
+    """A 4x-long outlier: self_att (exp=2) shrinks batch 16x, LSTM (exp=1) 4x.
+
+    ref_len=32, max_bs=32, outlier length=128 (4x median):
+      LSTM (exp=1):  cap = 32 * (32/128)^1 = 8  -> bs=8  (4x shrink)
+      self_att(exp=2): cap = 32 * (32/128)^2 = 2  -> bs=2  (16x shrink)
+    Both bounded to power-of-two sizes; self_att isolates quadratically more.
+    """
+    # LSTM (linear cost): 4x longer -> 4x smaller batch -> bs=8.
+    assert _cost_aware_batch_size(128, 32, 32, exponent=1) == 8
+    # self_att (quadratic cost): 4x longer -> 16x smaller batch -> bs=2.
+    assert _cost_aware_batch_size(128, 32, 32, exponent=2) == 2
+    # self_att batch size is strictly smaller than LSTM for the same outlier.
+    assert _cost_aware_batch_size(128, 32, 32, exponent=2) < _cost_aware_batch_size(128, 32, 32, exponent=1)
+
+
+def test_cost_aware_chunks_self_att_smaller_outlier_chunk_than_lstm() -> None:
+    """self_att chunking isolates a long outlier into a smaller batch than LSTM."""
+    order = list(range(64))
+    n_wins = [128] + [32] * 63  # one 4x outlier + 63 median-length files
+    lstm_chunks = _cost_aware_chunks(order, n_wins, 32, exponent=1)
+    sa_chunks = _cost_aware_chunks(order, n_wins, 32, exponent=2)
+    # The outlier is always chunk[0] (sorted descending); self_att batch is smaller.
+    _, lstm_bs0 = lstm_chunks[0]
+    _, sa_bs0 = sa_chunks[0]
+    assert sa_bs0 < lstm_bs0, f"self_att bs={sa_bs0} not < LSTM bs={lstm_bs0}"
+    assert sa_bs0 == 2   # 32 * (32/128)^2 = 2
+    assert lstm_bs0 == 8  # 32 * (32/128)^1 = 8
+    # Both keep bounded power-of-two sizes for the short majority.
+    assert all(bs <= 32 for _, bs in sa_chunks)
+    assert all(bs <= 32 for _, bs in lstm_chunks)
+    # Both are deterministic (same input -> same output).
+    assert _cost_aware_chunks(order, n_wins, 32, exponent=2) == sa_chunks
 
 
 def test_cost_aware_chunks_isolate_long_outlier() -> None:
@@ -605,7 +712,7 @@ def test_collect_model_failure_aborts(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 # ---------------------------------------------------------------------------
-# F7: CSV model identity — graceful fallback to source stem
+# F7: CSV model identity — source_name > display_name/model_label > stem
 # ---------------------------------------------------------------------------
 
 def test_model_identity_falls_back_to_source_stem() -> None:
@@ -613,6 +720,47 @@ def test_model_identity_falls_back_to_source_stem() -> None:
     from nisqa_jax.checkpoint import load_converted_checkpoint
     cfg, _ = load_converted_checkpoint(MOS_ONLY)
     assert _model_identity(cfg) == cfg.source_path.stem
+
+
+def test_model_identity_prefers_source_name() -> None:
+    """source_name (checkpoint lane's run label) is the canonical identity."""
+    _skip_if_weights_missing()
+    from nisqa_jax.checkpoint import load_converted_checkpoint
+    cfg, _ = load_converted_checkpoint(MOS_ONLY)
+    # Simulate the checkpoint lane's ModelConfig carrying a source_name field.
+    stub = SimpleNamespace(
+        source_name="NISQA_mos_only_run42",
+        display_name="should_not_win",
+        model_label="also_not",
+        source_path=cfg.source_path,
+    )
+    assert _model_identity(stub) == "NISQA_mos_only_run42"
+
+
+def test_model_identity_source_name_beats_display_name() -> None:
+    """source_name is preferred over display_name/model_label when both present."""
+    _skip_if_weights_missing()
+    from nisqa_jax.checkpoint import load_converted_checkpoint
+    cfg, _ = load_converted_checkpoint(MOS_ONLY)
+    stub = SimpleNamespace(
+        source_name="canonical_run_label",
+        display_name="alternate_label",
+        source_path=cfg.source_path,
+    )
+    assert _model_identity(stub) == "canonical_run_label"
+
+
+def test_model_identity_empty_source_name_falls_to_display_name() -> None:
+    """An empty source_name falls through to display_name, then stem."""
+    _skip_if_weights_missing()
+    from nisqa_jax.checkpoint import load_converted_checkpoint
+    cfg, _ = load_converted_checkpoint(MOS_ONLY)
+    stub = SimpleNamespace(
+        source_name="",
+        display_name="NISQA_MOS_v1.4",
+        source_path=cfg.source_path,
+    )
+    assert _model_identity(stub) == "NISQA_MOS_v1.4"
 
 
 def test_model_identity_prefers_display_name() -> None:

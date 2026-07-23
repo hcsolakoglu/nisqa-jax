@@ -54,14 +54,19 @@ _CSV_COLUMN_FOR_OUTPUT: dict[str, str] = {
 def _model_identity(cfg: ModelConfig) -> str:
     """CSV `model` column value: the run/checkpoint label.
 
-    Prefers an explicit display name if ``ModelConfig`` carries one (a future
-    lane may add ``display_name``/``model_label`` derived from the training-run
-    `name` arg), and falls back to the source checkpoint stem so this module
-    cherry-picks independently of that change. The architecture ``model_name``
-    (``NISQA``/``NISQA_DIM``) is intentionally NOT used here — PyTorch writes the
-    run label, not the architecture class.
+    Preference order:
+      1. ``source_name`` — the checkpoint lane's explicit run label (added by
+         the checkpoint-loading lane from the training-run ``name`` arg). This
+         is the canonical identity when present.
+      2. ``display_name`` / ``model_label`` — alternate explicit-label attrs a
+         future lane may add; kept for forward compatibility.
+      3. ``source_path.stem`` — the checkpoint filename stem, so this module
+         cherry-picks independently of either lane.
+
+    The architecture ``model_name`` (``NISQA``/``NISQA_DIM``) is intentionally
+    NOT used here — PyTorch writes the run label, not the architecture class.
     """
-    for attr in ("display_name", "model_label"):
+    for attr in ("source_name", "display_name", "model_label"):
         value = getattr(cfg, attr, None)
         if value:
             return str(value)
@@ -167,22 +172,59 @@ def _validate_batch_size(batch_size: Any) -> int:
     return batch_size
 
 
-def _cost_aware_batch_size(length: int, ref_len: int, max_bs: int) -> int:
+def _validate_positive_int(value: Any, name: str) -> int:
+    """A positive-integer parameter (bool/float rejected).
+
+    Used for ``length_bucket`` and ``preprocess_workers``: bool is a subclass of
+    int, so ``True`` would silently be 1 and ``False`` would be 0 (then fail the
+    >= 1 check with a confusing message). Reject non-int types explicitly.
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(
+            f"{name} must be an int >= 1, got {value!r} ({type(value).__name__})"
+        )
+    if value < 1:
+        raise ValueError(f"{name} must be >= 1, got {value}")
+    return value
+
+
+def _cost_exponent(td: str) -> int:
+    """Padded-compute cost exponent for the temporal-dependency architecture.
+
+    The cost proxy of a padded chunk is ``batch_size * max_length**exponent``:
+      * ``self_att``: padded self-attention is ``B * L^2`` (every padded query
+        attends to every padded key), so ``exponent=2`` — long outliers are
+        isolated quadratically more aggressively.
+      * ``lstm``: the LSTM scan is ``B * L`` (linear in sequence length), so
+        ``exponent=1`` — outliers are isolated proportionally.
+
+    This is a cost-proxy heuristic for batch sizing, not a claim about absolute
+    FLOPs (which also depend on d_model, #layers, CNN front-end, etc.) or a
+    global optimum. It only controls how aggressively the scheduler shrinks the
+    batch for a long-tail chunk.
+    """
+    return 2 if td == "self_att" else 1
+
+
+def _cost_aware_batch_size(length: int, ref_len: int, max_bs: int, *, exponent: int = 1) -> int:
     """Largest power-of-two batch size <= max_bs that isolates long outliers.
 
-    The cost proxy of a chunk is ``batch_size * max_length_in_chunk`` (padded
+    The cost proxy of a chunk is ``batch_size * max_length**exponent`` (padded
     compute). To keep a heavy-tailed outlier from inflating a whole full-size
     chunk, the batch size for a chunk starting at length ``length`` is shrunk
-    proportionally to ``ref_len / length`` (``ref_len`` = median length): a file
-    ``k``x longer than the median runs in a batch ``~k``x smaller, bounded to the
-    power-of-two set {1, 2, ..., max_bs}. This is a conservative heuristic — not
-    a global optimum — but it deterministically isolates the long tail while
-    keeping short files in full batches.
+    so that ``bs * length**exponent`` stays near ``max_bs * ref_len**exponent``:
+    ``bs ≈ max_bs * (ref_len / length)**exponent``. With ``exponent=1`` (LSTM)
+    a file ``k``x longer than the median runs in a batch ``~k``x smaller; with
+    ``exponent=2`` (self_att) it runs in a batch ``~k^2``x smaller — isolating
+    the quadratic-attention long tail far more aggressively. The result is
+    bounded to the power-of-two set {1, 2, ..., max_bs}. This is a conservative
+    heuristic — not a global optimum — but it deterministically isolates the
+    long tail while keeping short files in full batches.
     """
     if max_bs < 1:
         return 1
     ratio = ref_len / max(length, 1)
-    cap = max(1, int(max_bs * ratio))
+    cap = max(1, int(max_bs * (ratio ** exponent)))
     p = 1
     while p * 2 <= cap and p * 2 <= max_bs:
         p *= 2
@@ -195,16 +237,18 @@ def _fixed_chunks(order: list[int], batch_size: int) -> list[list[int]]:
 
 
 def _cost_aware_chunks(
-    order: list[int], n_wins_est: list[int], batch_size: int
+    order: list[int], n_wins_est: list[int], batch_size: int, *, exponent: int = 1
 ) -> list[tuple[list[int], int]]:
     """Cost-aware chunking: vary batch size by length tier, preserve sorted order.
 
     ``order`` is sorted by ``n_wins_est`` descending (stable). Walk it left to
     right; each chunk's batch size is derived from its first (longest) member's
-    length via ``_cost_aware_batch_size``. The chunk then absorbs that many
-    consecutive files. Returns ``(indices, compile_batch_size)`` tuples matching
-    the fixed-mode chunk shape. Deterministic and order-preserving; per-file
-    results are identical to fixed mode (only grouping changes).
+    length via ``_cost_aware_batch_size`` (using ``exponent``). The chunk then
+    absorbs that many consecutive files. Returns ``(indices, compile_batch_size)``
+    tuples matching the fixed-mode chunk shape. Deterministic and order-
+    preserving; per-file results are identical to fixed mode (only grouping
+    changes). ``exponent`` comes from ``_cost_exponent(cfg.td)``: 2 for
+    self_att (B*L^2 cost), 1 for LSTM (B*L cost).
     """
     if not order:
         return []
@@ -217,7 +261,7 @@ def _cost_aware_chunks(
     i = 0
     n = len(order)
     while i < n:
-        bs_i = _cost_aware_batch_size(int(lengths[i]), ref_len, batch_size)
+        bs_i = _cost_aware_batch_size(int(lengths[i]), ref_len, batch_size, exponent=exponent)
         end = min(n, i + bs_i)
         chunks.append((order[i:end], bs_i))
         i = end
@@ -266,11 +310,14 @@ def predict_batch(
       * ``"cost_aware"``: a conservative cost-aware scheduler for heavy-tailed
         length distributions. Uses a bounded set of batch sizes (powers of two
         up to ``batch_size``) so a long outlier runs in a small batch instead of
-        inflating a whole full-size chunk's padded compute. Deterministic and
-        order-preserving; per-file scores are identical to fixed mode (only
-        grouping changes). This is a heuristic that reduces the
-        ``batch_size * max_length`` cost proxy — not a global optimum. Requires
-        ``sort_by_length=True``.
+        inflating a whole full-size chunk's padded compute. The cost proxy is
+        model-aware: ``batch_size * max_length**2`` for ``self_att`` (padded
+        attention is quadratic) and ``batch_size * max_length`` for ``lstm``
+        (linear scan), so self_att isolates long outliers quadratically more
+        aggressively than LSTM. Deterministic and order-preserving; per-file
+        scores are identical to fixed mode (only grouping changes). This is a
+        heuristic — not a global optimum / DP solution — that reduces the
+        cost proxy. Requires ``sort_by_length=True``.
 
     ``batch_size`` is clamped to ``len(wav_paths)`` for execution: a batch
     larger than the dataset would only pad with dummy rows (a pathological
@@ -299,9 +346,6 @@ def predict_batch(
     is logged. Off by default; only the failing chunk is re-run, completed
     chunks are kept.
     """
-    if preprocess_workers < 1:
-        raise ValueError("preprocess_workers must be >= 1")
-    batch_size = _validate_batch_size(batch_size)
     if on_error not in {"raise", "collect"}:
         raise ValueError(f"on_error must be 'raise' or 'collect', got {on_error!r}")
     if batch_mode not in {"fixed", "cost_aware"}:
@@ -311,6 +355,10 @@ def predict_batch(
             "batch_mode='cost_aware' requires sort_by_length=True "
             "(it isolates the long tail by sorted rank)"
         )
+    batch_size = _validate_batch_size(batch_size)
+    preprocess_workers = _validate_positive_int(preprocess_workers, "preprocess_workers")
+    if length_bucket is not None:
+        length_bucket = _validate_positive_int(length_bucket, "length_bucket")
     paths = [Path(p) for p in wav_paths]
     if not paths:
         raise ValueError("No wav files provided")
@@ -362,9 +410,12 @@ def predict_batch(
     if not sort_by_length:
         order = sorted(ok_idx)
     # Chunk the scheduled order. Each chunk carries its compile batch size
-    # (the padded batch dimension) for cache-stable dummy padding.
+    # (the padded batch dimension) for cache-stable dummy padding. The cost-aware
+    # scheduler's exponent is model-derived: self_att pads B*L^2 (quadratic
+    # attention), LSTM pads B*L (linear scan).
     if batch_mode == "cost_aware":
-        chunked_idx = _cost_aware_chunks(order, n_wins_est, effective_bs)
+        exponent = _cost_exponent(model.config.td)
+        chunked_idx = _cost_aware_chunks(order, n_wins_est, effective_bs, exponent=exponent)
     else:
         chunked_idx = [(chunk, effective_bs) for chunk in _fixed_chunks(order, effective_bs)]
 
