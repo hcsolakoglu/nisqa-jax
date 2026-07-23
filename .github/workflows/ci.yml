@@ -14,8 +14,11 @@ concurrency:
 # Tool pins: every CI tool is pinned to an exact version so a upstream release
 # cannot silently change the gate. Bump deliberately and re-run the full suite.
 # GitHub Actions are pinned to immutable commit SHAs (not floating tags) so a
-# compromised tag cannot replace the action we run; Dependabot (see
-# .github/dependabot.yml) opens PRs to bump these SHAs after they age in.
+# compromised tag cannot replace the action we run; the Dependabot github-actions
+# updater (see .github/dependabot.yml) opens PRs to bump these SHAs after they
+# age in. The inline ruff/mypy/build version pins below are NOT auto-updated by
+# Dependabot (its pip ecosystem scans package manifests, not workflow YAML);
+# review and bump them manually, or adopt a real update mechanism.
 jobs:
   lint:
     name: Lint (ruff ${{ matrix.ruff }})
@@ -146,6 +149,37 @@ jobs:
           /tmp/cleanroom_whl/bin/nisqa-jax --mode predict_file \
             --pretrained_model "$(/tmp/cleanroom_whl/bin/python -c 'from nisqa_jax.weights import WEIGHTS_DIR; print(WEIGHTS_DIR / "nisqa_mos_only.npz")')" \
             --deg /tmp/smoke_sine.wav
-      - name: Artifact verifier (installed wheel)
+      - name: Clean-room wheel smoke (all 3 checkpoints, finite forward)
+        # Load every bundled checkpoint and run a finite minimal forward pass on
+        # each (not just existence/MOS): confirms all three convert+load+run
+        # inside the installed wheel with no source checkout. Uses tiny
+        # synthetic segment inputs (no audio preprocessing) to keep runtime
+        # reasonable.
+        env:
+          JAX_PLATFORMS: cpu
         run: |
-          /tmp/cleanroom_whl/bin/python "$GITHUB_WORKSPACE/scripts/verify_artifacts.py" --strict
+          cd /tmp
+          /tmp/cleanroom_whl/bin/python - <<'PY'
+          import numpy as np
+          from nisqa_jax.weights import WEIGHTS_DIR
+          from nisqa_jax import load_model
+          for name in ("nisqa", "nisqa_mos_only", "nisqa_tts"):
+              model = load_model(WEIGHTS_DIR / f"{name}.npz", device="cpu", precision="float32")
+              feat = model.config.feature
+              # Minimal finite forward: batch=1, 4 segments, all valid.
+              x = np.zeros((1, 4, 1, feat.n_mels, feat.seg_length), dtype=np.float32)
+              nw = np.array([4], dtype=np.int32)
+              out = model.predict_segments(x, nw)
+              out = np.asarray(out)
+              assert out.shape[0] == 1, f"{name}: bad batch shape {out.shape}"
+              assert np.isfinite(out).all(), f"{name}: non-finite output {out}"
+              print(f"{name}: OK shape={out.shape} finite=True")
+          PY
+      - name: Artifact verifier (installed wheel)
+        # Verify the artifacts inside the installed wheel's weights directory,
+        # not the source checkout, so the gate inspects exactly what a wheel
+        # consumer gets. The weights dir is resolved from the installed package
+        # via WEIGHTS_DIR and passed explicitly to --weights-dir.
+        run: |
+          WDIR="$(/tmp/cleanroom_whl/bin/python -c 'from nisqa_jax.weights import WEIGHTS_DIR; print(WEIGHTS_DIR)')"
+          /tmp/cleanroom_whl/bin/python "$GITHUB_WORKSPACE/scripts/verify_artifacts.py" --strict --weights-dir "$WDIR"

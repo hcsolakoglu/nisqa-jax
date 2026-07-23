@@ -83,6 +83,13 @@ _REQUIRED_SDIST_FILES = [
     "tests/golden/nisqa.golden.npz",
     "tests/golden/nisqa_mos_only.golden.npz",
     "tests/golden/nisqa_tts.golden.npz",
+    # PyTorch reference trust chain: real PyTorch outputs committed alongside
+    # the JAX golden vectors. The sdist must carry these so a source install can
+    # reproduce the full golden parity gate (which compares current JAX outputs
+    # directly against the PyTorch reference).
+    "tests/golden/nisqa.ptref.npz",
+    "tests/golden/nisqa_mos_only.ptref.npz",
+    "tests/golden/nisqa_tts.ptref.npz",
     "MANIFEST.in",
     "LICENSE",
     "README.md",
@@ -179,3 +186,42 @@ def test_sdist_includes_bundled_weights() -> None:
     ]
     missing = [f for f in required if f"{prefix}{f}" not in names]
     assert not missing, f"sdist missing bundled weight artifacts: {missing}"
+
+
+def test_sdist_excludes_egg_info() -> None:
+    """The sdist must not contain egg-info metadata directory contents.
+
+    setuptools may leave a ``*.egg-info`` metadata directory (PKG-INFO,
+    entry_points.txt, requires.txt, dependency_links.txt, top_level.txt) in the
+    source tree during local builds; MANIFEST.in ``prune *.egg-info`` removes
+    all of those from the sdist. A leaked egg-info is build-machine-specific
+    cruft that does not belong in a reproducible source distribution.
+
+    NOTE on SOURCES.txt: setuptools' ``sdist.run()`` unconditionally appends
+    ``<pkg>.egg-info/SOURCES.txt`` to the file list *after* MANIFEST.in is
+    processed (verified in setuptools 70.x source: ``self.filelist.append(
+    os.path.join(ei_cmd.egg_info, 'SOURCES.txt'))``), so MANIFEST ``prune``
+    cannot remove it. SOURCES.txt is the auto-generated source-file manifest
+    (not build-machine-specific metadata) and is the sole permitted egg-info
+    artifact; every other egg-info file must be pruned.
+    """
+    sdist = _find_sdist()
+    if sdist is None:
+        pytest.skip(f"no sdist in {DIST}; run `python -m build` first")
+    names = _sdist_names(sdist)
+    egg_info_entries = [n for n in names if ".egg-info/" in n or n.endswith(".egg-info")]
+    # The only permitted egg-info artifact is the setuptools-mandated SOURCES.txt
+    # (and its parent directory entry). Any other egg-info file is a prune leak.
+    permitted = {n for n in egg_info_entries if n.endswith("/SOURCES.txt")}
+    # The bare directory entry for the egg-info dir accompanies SOURCES.txt.
+    permitted_dir = {n for n in egg_info_entries if n.endswith(".egg-info") and not n.endswith("/")}
+    leaked = [n for n in egg_info_entries if n not in permitted and n not in permitted_dir]
+    assert not leaked, (
+        f"sdist leaked egg-info contents (only SOURCES.txt is permitted): {leaked}"
+    )
+    # Sanity: if any egg-info entry is present, it must be exactly SOURCES.txt
+    # (+ its dir). If setuptools changes to stop force-adding SOURCES.txt, this
+    # still passes (empty egg_info_entries); if it starts adding other files,
+    # the leaked check above catches them.
+    non_sources = [n for n in egg_info_entries if not n.endswith("/SOURCES.txt") and not n.endswith(".egg-info")]
+    assert not non_sources, f"sdist leaked non-SOURCES.txt egg-info contents: {non_sources}"

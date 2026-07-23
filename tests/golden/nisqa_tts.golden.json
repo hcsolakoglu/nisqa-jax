@@ -111,6 +111,7 @@
     "naturalness"
   ],
   "platform": "Linux-6.12.10-76061203-generic-x86_64-with-glibc2.35",
+  "ptref_npz": "nisqa_tts.ptref.npz",
   "ptref_sha256": "f4c717e5fc88403061733fc61fa9019cf3802929f788e7de87de94ea62c55b73",
   "python": "3.12.12"
 }

@@ -1,9 +1,17 @@
-# Dependabot configuration for pinned GitHub Actions and Python tooling.
+# Dependabot configuration for pinned GitHub Actions and Python runtime deps.
 #
 # CI actions are pinned to immutable commit SHAs (see .github/workflows/ci.yml)
-# so a compromised tag cannot replace the action we run. Dependabot opens PRs
-# to bump those SHAs (and the pinned ruff/mypy/build versions) after they age
-# in; each bump PR must pass the full CI gate before merge.
+# so a compromised tag cannot replace the action we run. The github-actions
+# updater below opens PRs to bump those SHAs after they age in; each bump PR
+# must pass the full CI gate before merge.
+#
+# The pip updater below handles declared Python runtime/build inputs in
+# pyproject.toml / requirements files. It does NOT update the inline tool
+# version pins that live directly in the workflow YAML (ruff/mypy/build matrix
+# versions and the `pip install "ruff==..."` lines in ci.yml) -- Dependabot's
+# pip ecosystem only scans package manifest files, not arbitrary YAML strings.
+# Those inline pins require manual review (or adopt a real update mechanism
+# such as a scheduled rennovate bot or a pip-compile pipeline) to stay current.
 version: 2
 updates:
   # GitHub Actions: bump the SHA-pinned actions in ci.yml.
@@ -16,10 +24,9 @@ updates:
       prefix: "ci: "
     labels: ["ci", "dependencies"]
 
-  # pip: bump the pinned CI tool versions (ruff/mypy/build) declared in ci.yml.
-  # (pip updates target pyproject.toml / requirements files; the CI tool pins
-  # live in the workflow YAML, so this keeps runtime deps current while the
-  # workflow pins are reviewed manually via the actions updater above.)
+  # pip: bump declared Python deps in pyproject.toml / requirements files.
+  # NOTE: this does NOT bump the inline ruff/mypy/build pins in ci.yml (those
+  # are workflow-YAML strings, not package manifests) -- review those manually.
   - package-ecosystem: "pip"
     directory: "/"
     schedule:

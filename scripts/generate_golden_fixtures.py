@@ -247,6 +247,7 @@ def main(argv: list[str] | None = None) -> int:
             if ptref is not None:
                 ptref_path = out_dir / f"{stem}.ptref.npz"
                 np.savez(ptref_path, **ptref)
+                meta["ptref_npz"] = ptref_path.name
                 meta["ptref_sha256"] = _sha256(ptref_path)
                 # Record max abs diff JAX-vs-PyTorch as provenance evidence.
                 max_diff = 0.0
@@ -263,6 +264,8 @@ def main(argv: list[str] | None = None) -> int:
             "golden_sha256": _sha256(npz_path),
             "artifact_sha256": meta["artifact_sha256"],
             "n_inputs": meta["n_inputs"],
+            "ptref_npz": meta.get("ptref_npz"),
+            "ptref_sha256": meta.get("ptref_sha256"),
             "jax_vs_pytorch_max_abs": meta.get("jax_vs_pytorch_max_abs"),
         }
         print(f"  wrote {npz_path.name} + {json_path.name}")

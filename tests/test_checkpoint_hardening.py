@@ -48,6 +48,7 @@ from nisqa_jax.checkpoint import (  # noqa: E402
     convert_checkpoint,
     load_converted_checkpoint,
 )
+from nisqa_jax.checkpoint import _torch_version_lt  # noqa: E402
 from nisqa_jax.config import ModelConfig  # noqa: E402
 
 
@@ -59,6 +60,17 @@ def _skip_if_weights_missing() -> None:
 def _skip_if_ref_missing() -> None:
     if not (REF_WEIGHTS / "nisqa_mos_only.tar").exists():
         pytest.skip(f"source reference weights unavailable: {REF_WEIGHTS}")
+
+
+def _skip_if_no_torch() -> None:
+    """Conversion tests require torch; skip cleanly when it is not installed.
+
+    Even if the /tmp reference .tar files happen to exist on disk, conversion
+    calls ``_torch()`` which raises RuntimeError without torch installed. Skip
+    (do not error) so the suite is green in a torch-free environment; this is
+    test behavior only and does not weaken any actual gate.
+    """
+    pytest.importorskip("torch")
 
 
 def _self_att_args(nhead: int = 1) -> dict:
@@ -354,6 +366,7 @@ class TestBackwardCompat:
 class TestSafeTorchLoad:
     def test_shipped_source_tar_converts_with_weights_only(self, tmp_path: Path) -> None:
         """Stock NISQA .tar converts under weights_only=True (no unsafe fallback)."""
+        _skip_if_no_torch()
         _skip_if_ref_missing()
         cfg, params = convert_checkpoint(REF_WEIGHTS / "nisqa_mos_only.tar", cache_dir=tmp_path)
         assert cfg.td == "self_att"
@@ -367,6 +380,7 @@ class TestSafeTorchLoad:
 
     @pytest.mark.parametrize("tar", ["nisqa_mos_only.tar", "nisqa.tar", "nisqa_tts.tar"])
     def test_all_shipped_source_tars_convert(self, tmp_path: Path, tar: str) -> None:
+        _skip_if_no_torch()
         _skip_if_ref_missing()
         if not (REF_WEIGHTS / tar).exists():
             pytest.skip(f"{tar} unavailable")
@@ -395,6 +409,47 @@ class TestSafeTorchLoad:
         )
         with pytest.raises(RuntimeError, match="weights_only=True"):
             convert_checkpoint(bad, cache_dir=tmp_path)
+
+
+class TestTorchVersionParse:
+    """Numeric major/minor parsing for the <1.13 weights_only classification.
+
+    The TypeError handler in ``_load_torch_checkpoint`` must classify a torch
+    version as "too old for weights_only" iff it is strictly older than 1.13.
+    Parsing is numeric (not lexicographic string compare) so suffixes
+    (``+cu128``, ``.dev0``, ``+cpu``) and multi-digit minor numbers do not
+    misclassify. A non-parseable version is treated as 0.0 (safely "old") so
+    the caller never silently passes an unsupported torch.
+    """
+
+    @pytest.mark.parametrize(
+        "version,expected_lt",
+        [
+            ("1.9.0", True),
+            ("1.10.2", True),
+            ("1.10.2+cpu", True),
+            ("1.12.1", True),
+            ("1.12.1.dev0", True),
+            ("1.13.0", False),
+            ("1.13.0+cpu", False),
+            ("1.13.1", False),
+            ("2.0.0", False),
+            ("2.11.0+cu128", False),
+            ("2.11.0.dev0", False),
+        ],
+    )
+    def test_version_classification(self, version: str, expected_lt: bool) -> None:
+        assert _torch_version_lt(version, 1, 13) is expected_lt
+
+    def test_multidigit_minor_not_lexicographic(self) -> None:
+        """Lexicographic compare would wrongly rank '1.9' > '1.13'; numeric is correct."""
+        assert _torch_version_lt("1.9.0", 1, 13) is True
+        assert _torch_version_lt("1.13.0", 1, 9) is False
+
+    def test_unparseable_version_treated_as_old(self) -> None:
+        """A garbage version string must classify as 'too old' (safe), not pass."""
+        assert _torch_version_lt("garbage", 1, 13) is True
+        assert _torch_version_lt("", 1, 13) is True
 
 
 def _flatten_params(tree: object, prefix: str = "") -> dict[str, np.ndarray]:
@@ -647,6 +702,7 @@ class TestNoPathOrSecretLeakage:
 
     def test_converted_artifact_has_no_absolute_path(self, tmp_path: Path) -> None:
         """A freshly converted artifact stores only the bare source filename."""
+        _skip_if_no_torch()
         _skip_if_ref_missing()
         convert_checkpoint(REF_WEIGHTS / "nisqa_mos_only.tar", cache_dir=tmp_path)
         jsons = list(tmp_path.glob("*.json"))

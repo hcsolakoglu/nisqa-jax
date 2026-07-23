@@ -100,6 +100,43 @@ def _torch() -> Any:
     return torch
 
 
+def _torch_version_lt(version: str, major: int, minor: int) -> bool:
+    """Return True if ``version`` is strictly older than ``major.minor``.
+
+    Parses the leading numeric major/minor numerically (not lexicographically)
+    so suffixes like ``+cu128``, ``.dev0``, ``.rc1`` and multi-digit minor
+    numbers are handled correctly. Examples::
+
+        _torch_version_lt("1.12.1+cpu", 1, 13) -> True
+        _torch_version_lt("1.13.0", 1, 13)     -> False
+        _torch_version_lt("2.11.0+cu128", 1, 13) -> False
+        _torch_version_lt("1.9.0", 1, 13)      -> True
+        _torch_version_lt("1.10.2.dev0", 1, 13) -> True
+
+    A non-parseable version is treated as 0.0 (safely "old") so the caller's
+    "too old" branch fires rather than silently passing an unsupported torch.
+    """
+    # Strip any local/build suffix after '+' and pre-release suffix after a
+    # non-numeric component, then take the leading numeric dotted parts.
+    base = version.split("+", 1)[0]
+    parts: list[int] = []
+    for part in base.split("."):
+        # Stop at the first non-numeric component (e.g. "0" in "1.13.0.dev0"
+        # is numeric; "dev0" is not -> we keep [1,13,0]).
+        digits = ""
+        for ch in part:
+            if ch.isdigit():
+                digits += ch
+            else:
+                break
+        if digits == "":
+            break
+        parts.append(int(digits))
+    ver_major = parts[0] if len(parts) > 0 else 0
+    ver_minor = parts[1] if len(parts) > 1 else 0
+    return (ver_major, ver_minor) < (major, minor)
+
+
 def _load_torch_checkpoint(torch: Any, path: Path) -> dict[str, Any]:
     """Load a NISQA .tar checkpoint with ``weights_only=True`` (safe unpickle).
 
@@ -123,9 +160,12 @@ def _load_torch_checkpoint(torch: Any, path: Path) -> dict[str, Any]:
     except TypeError:
         # Distinguish "torch too old for weights_only kwarg" from a TypeError
         # raised inside the unpickler. The kwarg-missing case is detected by
-        # inspecting the torch version: <1.13 lacks weights_only entirely.
+        # numerically parsing the torch major.minor version: <1.13 lacks
+        # weights_only entirely. Parsing numerically (not lexicographic string
+        # compare) is robust to suffixes like "2.11.0+cu128", "1.13.0.dev0",
+        # "1.12.1+cpu", and multi-digit minor numbers (e.g. "1.13" vs "1.9").
         version = getattr(torch, "__version__", "0")
-        if version.split("+", 1)[0].split(".", 2) < ["1", "13"]:
+        if _torch_version_lt(version, 1, 13):
             raise RuntimeError(
                 f"Installed torch ({version}) does not support weights_only=True "
                 "(requires torch>=1.13). Upgrade torch before converting checkpoints, "

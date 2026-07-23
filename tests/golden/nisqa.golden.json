@@ -115,6 +115,7 @@
     "loud"
   ],
   "platform": "Linux-6.12.10-76061203-generic-x86_64-with-glibc2.35",
+  "ptref_npz": "nisqa.ptref.npz",
   "ptref_sha256": "e7417024628c16bb630b3071fdc567c85e2ef27ebca526ff578829c802be9295",
   "python": "3.12.12"
 }

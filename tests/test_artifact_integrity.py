@@ -333,3 +333,71 @@ def test_verifier_update_checksums_roundtrip(tmp_path: Path) -> None:
     json_names = {p.name for p in wdir.glob("*.json")}
     assert npz_names <= listed, f"NPZ missing from rewritten CHECKSUMS: {npz_names - listed}"
     assert json_names <= listed, f"JSON missing from rewritten CHECKSUMS: {json_names - listed}"
+
+
+def test_verifier_strict_requires_metadata_sha256(tmp_path: Path) -> None:
+    """Strict mode must fail when a JSON sidecar lacks metadata_sha256.
+
+    metadata_sha256 is the canonical semantic checksum; its absence in strict
+    mode (release CI) is a hard failure so a tampered/edited metadata payload
+    cannot pass the gate. We strip only metadata_sha256 (and fix the JSON
+    checksum so the checksum gate does not fire first) to isolate the
+    metadata_sha256 requirement.
+    """
+    from nisqa_jax.checkpoint import _sha256
+
+    wdir = _copy_weights_to_tmp(tmp_path)
+    js = wdir / "nisqa_mos_only.json"
+    meta = _load_metadata(js)
+    meta.pop("metadata_sha256", None)
+    _save_metadata(js, meta)
+    # Rewrite CHECKSUMS so the JSON checksum gate does not fire first (the
+    # metadata_sha256 requirement must be the diagnosed failure).
+    sums = (wdir / "CHECKSUMS.sha256").read_text()
+    lines = []
+    for line in sums.splitlines():
+        if line.strip() and not line.startswith("#") and line.endswith("nisqa_mos_only.json"):
+            digest, _, name = line.partition("  ")
+            lines.append(f"{_sha256(js)}  {name.strip()}")
+        else:
+            lines.append(line)
+    (wdir / "CHECKSUMS.sha256").write_text("\n".join(lines) + "\n")
+    rc, out, err = _run_verifier(wdir, "--strict")
+    assert rc != 0, "strict verifier must fail on missing metadata_sha256"
+    assert "metadata_sha256" in out
+
+
+def test_verifier_non_strict_warns_on_missing_metadata_sha256(tmp_path: Path) -> None:
+    """Non-strict mode must warn (not fail) on missing metadata_sha256."""
+    from nisqa_jax.checkpoint import _sha256
+
+    wdir = _copy_weights_to_tmp(tmp_path)
+    js = wdir / "nisqa_mos_only.json"
+    meta = _load_metadata(js)
+    meta.pop("metadata_sha256", None)
+    _save_metadata(js, meta)
+    sums = (wdir / "CHECKSUMS.sha256").read_text()
+    lines = []
+    for line in sums.splitlines():
+        if line.strip() and not line.startswith("#") and line.endswith("nisqa_mos_only.json"):
+            digest, _, name = line.partition("  ")
+            lines.append(f"{_sha256(js)}  {name.strip()}")
+        else:
+            lines.append(line)
+    (wdir / "CHECKSUMS.sha256").write_text("\n".join(lines) + "\n")
+    rc, out, err = _run_verifier(wdir, "--no-strict")
+    assert rc == 0, "non-strict verifier must not fail on missing metadata_sha256"
+    assert "metadata_sha256" in err  # warned, not failed
+
+
+def test_verifier_weights_dir_inspects_installed_wheel_path(tmp_path: Path) -> None:
+    """--weights-dir must let the verifier inspect an arbitrary directory (wheel path).
+
+    Simulates the CI installed-wheel verifier step: the weights dir is passed
+    explicitly (resolved from the installed package in real CI) rather than
+    auto-detected from the source tree.
+    """
+    wdir = _copy_weights_to_tmp(tmp_path)
+    rc, out, err = _run_verifier(wdir, "--strict")
+    assert rc == 0, f"verifier failed on copied weights dir:\nstdout={out}\nstderr={err}"
+    assert "metadata=valid" in out

@@ -34,4 +34,9 @@ global-exclude *.py[cod]
 global-exclude .pytest_cache
 global-exclude .mypy_cache
 global-exclude .ruff_cache
-global-exclude *.egg-info
+# Prune any egg-info directories entirely (metadata dirs setuptools may leave
+# in the source tree during local builds). `global-exclude *.egg-info` only
+# excludes individual files whose path matches the pattern; `prune` removes
+# whole directory trees, so no egg-info contents (SOURCES.txt, PKG-INFO, etc.)
+# can leak into the sdist.
+prune *.egg-info

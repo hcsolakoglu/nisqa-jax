@@ -183,8 +183,15 @@ def _check_manifest(npz: Path) -> tuple[list[str], dict | None]:
     return errors, metadata
 
 
-def _check_metadata(npz: Path, metadata: dict, recomputed_npz_sha: str) -> list[str]:
-    """Validate the JSON metadata sidecar's required fields and cross-checks."""
+def _check_metadata(npz: Path, metadata: dict, recomputed_npz_sha: str, *, strict: bool = True) -> list[str]:
+    """Validate the JSON metadata sidecar's required fields and cross-checks.
+
+    ``metadata_sha256`` (the canonical semantic checksum) is required only in
+    strict mode: older artifacts predate the field and warn (not fail) in
+    non-strict dev mode, but release CI (strict) rejects a sidecar lacking it
+    so a tampered/edited metadata payload is caught independently of the
+    structural key/shape/dtype checks.
+    """
     errors: list[str] = []
     json_path = npz.with_suffix(".json")
     # Required top-level fields.
@@ -239,6 +246,23 @@ def _check_metadata(npz: Path, metadata: dict, recomputed_npz_sha: str) -> list[
     out_names = metadata.get("output_names")
     if not isinstance(out_names, list | tuple) or not out_names or not all(isinstance(n, str) for n in out_names):
         errors.append(f"  {json_path.name} output_names must be a non-empty list of strings, got {out_names!r}")
+    # metadata_sha256: the canonical semantic checksum of the metadata payload.
+    # Required in strict mode (release CI) so a tampered/edited sidecar is
+    # caught independently of the structural checks. Older artifacts predate
+    # this field; in strict mode its absence is a failure (re-convert to embed
+    # it), in non-strict mode it is reported but does not fail the gate.
+    meta_sha = metadata.get("metadata_sha256")
+    if "metadata_sha256" not in metadata:
+        msg = (
+            f"  {json_path.name} missing 'metadata_sha256' "
+            "(canonical semantic checksum; re-convert the source checkpoint to embed it)"
+        )
+        if strict:
+            errors.append(msg)
+        else:
+            print(f"warning:{msg}", file=sys.stderr)
+    elif not isinstance(meta_sha, str) or len(meta_sha) != 64:
+        errors.append(f"  {json_path.name} metadata_sha256 is not a 64-hex string: {meta_sha!r}")
     return errors
 
 
@@ -332,7 +356,7 @@ def main(argv: list[str] | None = None) -> int:
         manifest_errors, metadata = _check_manifest(npz)
         errors += manifest_errors
         if metadata is not None:
-            errors += _check_metadata(npz, metadata, recomputed)
+            errors += _check_metadata(npz, metadata, recomputed, strict=args.strict)
         if errors:
             failures += 1
             print(f"FAIL {npz.name}")

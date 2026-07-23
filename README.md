@@ -217,53 +217,62 @@ persistent cache is supported by JAX (code-audited; not CI-tested here).
 ## Predict
 
 A `nisqa-jax` console script is installed alongside the package (equivalent to
-`python -m nisqa_jax.predict`). The `--pretrained_model` path may be either a
-relative path to the in-package weights (`nisqa_jax/weights/<name>.npz`) or an
-absolute path to any converted `.npz`:
+`python -m nisqa_jax.predict`). The `--pretrained_model` path may be an
+absolute path to any converted `.npz`, or you can resolve the bundled
+checkpoints portably via `nisqa_jax.weights.WEIGHTS_DIR` (works inside an
+installed wheel/sdist with no repo checkout).
+
+**Installed package (recommended):** resolve the bundled weights directory from
+the installed package so the path is correct regardless of install location:
 
 ```bash
-nisqa-jax --mode predict_file \
-  --pretrained_model nisqa_jax/weights/nisqa_mos_only.npz \
+# Shell: resolve WEIGHTS_DIR from the installed package, then pass it to the CLI.
+W="$(python -c 'from nisqa_jax.weights import WEIGHTS_DIR; print(WEIGHTS_DIR / "nisqa_mos_only.npz")')"
+
+nisqa-jax --mode predict_file --pretrained_model "$W" --deg sample.wav --precision float32
+```
+
+```bash
+# Single file (module form):
+W="$(python -c 'from nisqa_jax.weights import WEIGHTS_DIR; print(WEIGHTS_DIR / "nisqa_mos_only.npz")')"
+python -m nisqa_jax.predict --mode predict_file --pretrained_model "$W" \
   --deg sample.wav --precision float32
 ```
 
-Single file:
 ```bash
-python -m nisqa_jax.predict \
-  --mode predict_file \
-  --pretrained_model nisqa_jax/weights/nisqa_mos_only.npz \
-  --deg sample.wav \
-  --precision float32
+# Batch directory:
+W="$(python -c 'from nisqa_jax.weights import WEIGHTS_DIR; print(WEIGHTS_DIR / "nisqa.npz")')"
+python -m nisqa_jax.predict --mode predict_dir --pretrained_model "$W" \
+  --data_dir wavs --bs 8 --preprocess_workers 4 --precision bf16
 ```
 
-Batch directory:
 ```bash
-python -m nisqa_jax.predict \
-  --mode predict_dir \
-  --pretrained_model nisqa_jax/weights/nisqa.npz \
-  --data_dir wavs \
-  --bs 8 \
-  --preprocess_workers 4 \
-  --precision bf16
-```
-
-Robust batch options:
-```bash
+# Robust batch options:
 # Skip corrupt/too-short files instead of aborting the whole batch; an `error`
 # column is added (NaN for good rows, message for bad ones).
-python -m nisqa_jax.predict --mode predict_dir --pretrained_model nisqa_jax/weights/nisqa.npz \
+W="$(python -c 'from nisqa_jax.weights import WEIGHTS_DIR; print(WEIGHTS_DIR / "nisqa.npz")')"
+python -m nisqa_jax.predict --mode predict_dir --pretrained_model "$W" \
   --data_dir wavs --bs 8 --on_error collect
 
 # On GPU out-of-memory, halve --bs and retry down to 1 (logs each reduction).
-python -m nisqa_jax.predict --mode predict_dir --pretrained_model nisqa_jax/weights/nisqa.npz \
+python -m nisqa_jax.predict --mode predict_dir --pretrained_model "$W" \
   --data_dir wavs --bs 16 --auto_batch
 ```
+
+**Source checkout:** when running from a clone of the repo (editable install or
+not), the in-package weights are also reachable via the repo-relative path
+`nisqa_jax/weights/<name>.npz`, e.g.
+`--pretrained_model nisqa_jax/weights/nisqa_mos_only.npz`. The
+`WEIGHTS_DIR` form above is preferred because it is install-location-agnostic
+and works inside an installed wheel.
 
 Python API:
 ```python
 from nisqa_jax import load_model, predict_file
+from nisqa_jax.weights import WEIGHTS_DIR
 
-model = load_model("nisqa_jax/weights/nisqa_mos_only.npz", device="gpu", precision="bf16")
+# WEIGHTS_DIR resolves to the installed package's bundled weights directory.
+model = load_model(WEIGHTS_DIR / "nisqa_mos_only.npz", device="gpu", precision="bf16")
 scores = predict_file(model, "sample.wav")
 # {'mos': 1.324}
 ```
@@ -274,7 +283,10 @@ Pass `cache_dir` to `load_model` to persist XLA compilations across processes so
 the first inference of a given input shape pays the compile cost only once, ever:
 
 ```python
-model = load_model("nisqa_jax/weights/nisqa_mos_only.npz", device="gpu", cache_dir="xla_cache")
+from nisqa_jax import load_model
+from nisqa_jax.weights import WEIGHTS_DIR
+
+model = load_model(WEIGHTS_DIR / "nisqa_mos_only.npz", device="gpu", cache_dir="xla_cache")
 ```
 
 JAX's default 1-second minimum compile-time threshold would silently skip this
@@ -293,8 +305,9 @@ hot before real traffic:
 ```python
 from nisqa_jax import load_model, prewarm
 from nisqa_jax.predict import default_length_bucket
+from nisqa_jax.weights import WEIGHTS_DIR
 
-model = load_model("nisqa_jax/weights/nisqa_mos_only.npz", device="gpu", cache_dir="xla_cache")
+model = load_model(WEIGHTS_DIR / "nisqa_mos_only.npz", device="gpu", cache_dir="xla_cache")
 prewarm(model, batch_sizes=[8], bucket_lengths=[default_length_bucket(model.config)],
         cache_dir="xla_cache")
 ```
@@ -303,7 +316,8 @@ CLI: pass `--prewarm` to pre-compile the model's default bucket grid at `--bs`
 before the first real batch:
 
 ```bash
-python -m nisqa_jax.predict --mode predict_dir --pretrained_model nisqa_jax/weights/nisqa_mos_only.npz \
+W="$(python -c 'from nisqa_jax.weights import WEIGHTS_DIR; print(WEIGHTS_DIR / "nisqa_mos_only.npz")')"
+python -m nisqa_jax.predict --mode predict_dir --pretrained_model "$W" \
   --data_dir wavs --bs 8 --cache_dir xla_cache --prewarm
 ```
 
@@ -363,22 +377,25 @@ CI run, in strict mode (unknown/unlisted artifacts fail the gate).
 
 Model-only (JAX only):
 ```bash
+W="$(python -c 'from nisqa_jax.weights import WEIGHTS_DIR; print(WEIGHTS_DIR / "nisqa_mos_only.npz")')"
 python -m nisqa_jax.bench_compare \
-  --pretrained_model nisqa_jax/weights/nisqa_mos_only.npz \
+  --pretrained_model "$W" \
   --device gpu --precision bf16 --batch_size 8 --seq_len 128 --no_torch
 ```
 
 JAX vs PyTorch head-to-head (requires CUDA PyTorch):
 ```bash
+W="$(python -c 'from nisqa_jax.weights import WEIGHTS_DIR; print(WEIGHTS_DIR / "nisqa_mos_only.npz")')"
 python -m nisqa_jax.bench_compare \
-  --pretrained_model nisqa_jax/weights/nisqa_mos_only.npz \
+  --pretrained_model "$W" \
   --device gpu --batch_size 8 --seq_len 128 --steps 100
 ```
 
 End-to-end with preprocessing:
 ```bash
+W="$(python -c 'from nisqa_jax.weights import WEIGHTS_DIR; print(WEIGHTS_DIR / "nisqa_mos_only.npz")')"
 python -m nisqa_jax.bench \
-  --pretrained_model nisqa_jax/weights/nisqa_mos_only.npz \
+  --pretrained_model "$W" \
   --device gpu --precision bf16 --batch_size 8 \
   --data_dir wavs --preprocess_workers 4
 ```
