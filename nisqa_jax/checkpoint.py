@@ -252,7 +252,7 @@ def _flatten(tree: Any, prefix: str = "") -> dict[str, np.ndarray]:
         for key, value in tree.items():
             out.update(_flatten(value, f"{prefix}{key}/"))
         return out
-    if isinstance(tree, (tuple, list)):
+    if isinstance(tree, tuple | list):
         out = {}
         for idx, value in enumerate(tree):
             out.update(_flatten(value, f"{prefix}{idx}/"))

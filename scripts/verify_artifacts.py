@@ -237,7 +237,7 @@ def _check_metadata(npz: Path, metadata: dict, recomputed_npz_sha: str) -> list[
             )
     # output_names must be a non-empty tuple/list of strings.
     out_names = metadata.get("output_names")
-    if not isinstance(out_names, (list, tuple)) or not out_names or not all(isinstance(n, str) for n in out_names):
+    if not isinstance(out_names, list | tuple) or not out_names or not all(isinstance(n, str) for n in out_names):
         errors.append(f"  {json_path.name} output_names must be a non-empty list of strings, got {out_names!r}")
     return errors
 

@@ -549,7 +549,8 @@ def test_predict_batch_csv_columns_match_pytorch_format(
     df = predict_batch(model, paths, batch_size=2)
     assert list(df.columns) == expected_columns
     assert df["deg"].tolist() == [str(path) for path in paths]
-    assert (df["model"] == model.config.source_path.stem).all()
+    assert model.config.source_name is not None
+    assert (df["model"] == model.config.source_name).all()
 
 
 def test_predict_file_dict_api_keeps_output_names(tmp_path: Path) -> None:

@@ -20,7 +20,7 @@ import pytest
 import soundfile as sf
 
 ROOT = Path(__file__).resolve().parents[1]
-WEIGHTS_ROOT = Path(os.environ.get("NISQA_JAX_WEIGHTS_DIR", ROOT / "weights"))
+WEIGHTS_ROOT = Path(os.environ.get("NISQA_JAX_WEIGHTS_DIR", ROOT / "nisqa_jax" / "weights"))
 MOS_ONLY = WEIGHTS_ROOT / "nisqa_mos_only.npz"
 TTS = WEIGHTS_ROOT / "nisqa_tts.npz"
 
@@ -719,7 +719,8 @@ def test_model_identity_falls_back_to_source_stem() -> None:
     _skip_if_weights_missing()
     from nisqa_jax.checkpoint import load_converted_checkpoint
     cfg, _ = load_converted_checkpoint(MOS_ONLY)
-    assert _model_identity(cfg) == cfg.source_path.stem
+    stub = SimpleNamespace(source_name=None, source_path=cfg.source_path)
+    assert _model_identity(stub) == cfg.source_path.stem
 
 
 def test_model_identity_prefers_source_name() -> None:
