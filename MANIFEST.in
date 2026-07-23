@@ -19,7 +19,7 @@ recursive-include .github *.yml
 recursive-include scripts *.py
 
 # Tests + shared utils + golden parity fixtures (self-contained CI gate)
-recursive-include tests *.py *.json *.npz *.wav
+recursive-include tests *.py *.json *.npz
 
 # Bundled weight artifacts (in-package data; also included as package-data
 # in the wheel, but the sdist must carry them for editable/source installs).

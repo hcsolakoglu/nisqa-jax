@@ -138,7 +138,7 @@ jobs:
           cd /tmp
           /tmp/cleanroom_whl/bin/python - <<'PY'
           import numpy as np, soundfile as sf
-          sr=16000; t=np.linspace(0,1.5,int(sr*1.5),endpoint=False)
+          sr=48000; t=np.linspace(0,1.5,int(sr*1.5),endpoint=False)
           sf.write('/tmp/smoke_sine.wav', (0.3*np.sin(2*np.pi*220*t)).astype(np.float32), sr)
           from nisqa_jax.weights import WEIGHTS_DIR
           print('WEIGHTS:', WEIGHTS_DIR / 'nisqa_mos_only.npz')
