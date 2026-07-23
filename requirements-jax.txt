@@ -10,13 +10,13 @@
 #
 # ---- CPU install ----
 jax==0.4.30
-jaxlib==0.4.30
+jaxlib==0.6.2
 # ---- NVIDIA GPU install ----
 # For CUDA deployment, replace the two lines above with the CUDA meta-package
 # (brings in the matching jaxlib + CUDA wheels). See:
 # https://docs.jax.dev/en/latest/installation.html
 #   jax[cuda12_pip]==0.4.30
-#   jaxlib==0.4.30
+#   jaxlib==0.6.2
 numpy==1.26.4
 scipy==1.11.4
 librosa==0.10.2.post1
