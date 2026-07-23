@@ -1,0 +1,117 @@
+{
+  "artifact": "nisqa_mos_only.npz",
+  "artifact_sha256": "4ecab66de14ddf27ae7456f9463da835d6d028b440866adf6e4db11654a343c9",
+  "generator_version": 1,
+  "input_grid": [
+    {
+      "batch": 1,
+      "n_wins": 16,
+      "seed": 0,
+      "steps": 16
+    },
+    {
+      "batch": 1,
+      "n_wins": 20,
+      "seed": 1,
+      "steps": 24
+    },
+    {
+      "batch": 2,
+      "n_wins": 32,
+      "seed": 2,
+      "steps": 32
+    },
+    {
+      "batch": 2,
+      "n_wins": 40,
+      "seed": 3,
+      "steps": 48
+    },
+    {
+      "batch": 3,
+      "n_wins": 60,
+      "seed": 4,
+      "steps": 64
+    }
+  ],
+  "inputs": [
+    {
+      "batch": 1,
+      "n_wins": 16,
+      "seed": 0,
+      "steps": 16,
+      "x_shape": [
+        1,
+        16,
+        1,
+        48,
+        15
+      ]
+    },
+    {
+      "batch": 1,
+      "n_wins": 20,
+      "seed": 1,
+      "steps": 24,
+      "x_shape": [
+        1,
+        24,
+        1,
+        48,
+        15
+      ]
+    },
+    {
+      "batch": 2,
+      "n_wins": 32,
+      "seed": 2,
+      "steps": 32,
+      "x_shape": [
+        2,
+        32,
+        1,
+        48,
+        15
+      ]
+    },
+    {
+      "batch": 2,
+      "n_wins": 40,
+      "seed": 3,
+      "steps": 48,
+      "x_shape": [
+        2,
+        48,
+        1,
+        48,
+        15
+      ]
+    },
+    {
+      "batch": 3,
+      "n_wins": 60,
+      "seed": 4,
+      "steps": 64,
+      "x_shape": [
+        3,
+        64,
+        1,
+        48,
+        15
+      ]
+    }
+  ],
+  "jax": "0.4.30",
+  "jax_vs_pytorch_max_abs": 2.384185791015625e-07,
+  "jaxlib": "0.4.30",
+  "model_name": "NISQA",
+  "n_inputs": 5,
+  "numpy": "1.26.4",
+  "output_names": [
+    "mos"
+  ],
+  "platform": "Linux-6.12.10-76061203-generic-x86_64-with-glibc2.35",
+  "ptref_npz": "nisqa_mos_only.ptref.npz",
+  "ptref_sha256": "a22d91e00926fc24f6fdde10018e15795edeaaf7ec5780388cf5ba9fb58f2133",
+  "python": "3.12.12"
+}

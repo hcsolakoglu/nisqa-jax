@@ -1,0 +1,32 @@
+{
+  "nisqa": {
+    "artifact_sha256": "461591eac5cfb7fe245e2fac7427003eb13bd4bd51d60bc7644288a9f1cfccd9",
+    "golden_json": "nisqa.golden.json",
+    "golden_npz": "nisqa.golden.npz",
+    "golden_sha256": "90eba7b3866c5fddc48967c4f6454b089609fe8c8d8f850e6e37ed2a9ecf72a8",
+    "jax_vs_pytorch_max_abs": 7.152557373046875e-07,
+    "n_inputs": 5,
+    "ptref_npz": "nisqa.ptref.npz",
+    "ptref_sha256": "e7417024628c16bb630b3071fdc567c85e2ef27ebca526ff578829c802be9295"
+  },
+  "nisqa_mos_only": {
+    "artifact_sha256": "4ecab66de14ddf27ae7456f9463da835d6d028b440866adf6e4db11654a343c9",
+    "golden_json": "nisqa_mos_only.golden.json",
+    "golden_npz": "nisqa_mos_only.golden.npz",
+    "golden_sha256": "d3f694ed965948107c01158f1a8f1c0454025369c45282bde46f5417380b1434",
+    "jax_vs_pytorch_max_abs": 2.384185791015625e-07,
+    "n_inputs": 5,
+    "ptref_npz": "nisqa_mos_only.ptref.npz",
+    "ptref_sha256": "a22d91e00926fc24f6fdde10018e15795edeaaf7ec5780388cf5ba9fb58f2133"
+  },
+  "nisqa_tts": {
+    "artifact_sha256": "29c39672624447f3858296ab00436438a29fc5009234883dfa85cc6e9f50da36",
+    "golden_json": "nisqa_tts.golden.json",
+    "golden_npz": "nisqa_tts.golden.npz",
+    "golden_sha256": "c6476837f0967c66ce0de058a413e4643a6c39b4226af061334ade170c0a6d39",
+    "jax_vs_pytorch_max_abs": 1.1920928955078125e-06,
+    "n_inputs": 5,
+    "ptref_npz": "nisqa_tts.ptref.npz",
+    "ptref_sha256": "f4c717e5fc88403061733fc61fa9019cf3802929f788e7de87de94ea62c55b73"
+  }
+}

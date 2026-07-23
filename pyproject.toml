@@ -7,14 +7,14 @@ name = "nisqa-jax"
 version = "0.1.0"
 description = "Standalone JAX inference port for the shipped NISQA checkpoints"
 readme = "README.md"
-license = { text = "MIT" }
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.10"
 authors = [
   { name = "Hasan Can Solakoglu", email = "cansolakoglu130@gmail.com" },
 ]
 keywords = ["speech-quality", "NISQA", "JAX", "MOS", "inference"]
 classifiers = [
-  "License :: OSI Approved :: MIT License",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
@@ -41,8 +41,17 @@ dependencies = [
 
 [project.optional-dependencies]
 convert = ["torch>=2.0"]
+# `parity` adds torch for the live PyTorch parity tests (test_jax_port.py -m
+# parity). Those tests also require the source .tar checkpoints + the PyTorch
+# reference source repo on disk (see NISQA_SOURCE_WEIGHTS_DIR / PYTORCH_ROOT in
+# tests/test_jax_port.py); installing torch alone is NOT sufficient — they skip
+# cleanly without the source artifacts. CI relies on the self-contained golden
+# parity gate (tests/test_golden_parity.py) instead.
 parity = ["torch>=2.0", "pytest>=8"]
-test = ["pytest>=8", "torch>=2.0"]
+# `test` is the CI test extra: pytest only, no torch. The self-contained test
+# suite (golden parity, artifact integrity, validation, prewarm, build
+# contents) runs without torch; live PyTorch parity tests skip cleanly.
+test = ["pytest>=8"]
 
 [project.urls]
 Homepage = "https://github.com/hcsolakoglu/nisqa-jax"
@@ -53,13 +62,15 @@ Issues = "https://github.com/hcsolakoglu/nisqa-jax/issues"
 nisqa-jax = "nisqa_jax.predict:main"
 
 [tool.setuptools.packages.find]
-include = ["nisqa_jax*", "weights*"]
+include = ["nisqa_jax*"]
 
-# Bundled pre-converted weights (~3 MB total) ship inside the package so a
-# fresh install has zero-config inference. The .json shape-manifest sidecars
-# and the model-weights LICENSE pointer travel alongside the .npz files.
+# Bundled pre-converted weights (~3 MB total) ship inside the nisqa_jax.weights
+# subpackage so a fresh install has zero-config inference. The .json shape-
+# manifest sidecars and the model-weights LICENSE pointer travel alongside the
+# .npz files. Consumers must use nisqa_jax.weights.WEIGHTS_DIR; there is no
+# top-level `weights` package.
 [tool.setuptools.package-data]
-weights = ["*.npz", "*.json", "LICENSE_model_weights", "CHECKSUMS.sha256"]
+"nisqa_jax.weights" = ["*.npz", "*.json", "LICENSE_model_weights", "CHECKSUMS.sha256"]
 
 [tool.ruff]
 line-length = 120

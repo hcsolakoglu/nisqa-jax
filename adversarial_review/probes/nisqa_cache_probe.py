@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """Verify persistent compilation cache behavior across reloads on GPU."""
-import sys, time, tempfile
+import os, sys, time, tempfile
 from pathlib import Path
 import numpy as np
-ROOT = Path("/media/mithex/NVME 2/Codex Linux/NISQA PORT PROJECT")
+ROOT = Path(os.environ.get("NISQA_JAX_ROOT", Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(ROOT))
 import jax
 from nisqa_jax.checkpoint import load_model
-ART = ROOT/"weights"/"nisqa_mos_only.npz"
+ART = ROOT / "nisqa_jax" / "weights" / "nisqa_mos_only.npz"
 
 cache = Path(tempfile.mkdtemp())
 def time_compile(cache_dir):

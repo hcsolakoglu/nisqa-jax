@@ -11,6 +11,7 @@ import pandas as pd
 
 from .checkpoint import load_model
 from .features import preprocess_file
+from .predict import predict_batch
 
 
 def _collect_paths(args: argparse.Namespace) -> list[Path] | None:
@@ -78,6 +79,40 @@ def _run_end_to_end(args: argparse.Namespace, paths: list[Path]) -> None:
     if not paths:
         raise ValueError("No wav files found")
     model = load_model(args.pretrained_model, device=args.device, cache_dir=args.cache_dir, precision=args.precision)
+    cfg = model.config.feature
+
+    # Optional: benchmark the real predict_batch scheduler (length-aware sort,
+    # bucket-rounded padding, prefetch overlap) instead of this script's naive
+    # in-order chunking. The two differ in scheduling; the label below makes the
+    # difference explicit in the JSON output.
+    if args.use_predict_batch:
+        total_start = time.perf_counter()
+        predict_batch(
+            model,
+            paths,
+            batch_size=args.batch_size,
+            channel=args.channel,
+            preprocess_workers=args.preprocess_workers,
+            length_bucket=args.length_bucket,
+            on_error="raise",
+            batch_mode=args.batch_mode,
+        )
+        total_seconds = time.perf_counter() - total_start
+        result = {
+            "mode": "end_to_end",
+            "scheduler": "predict_batch",
+            "checkpoint": str(Path(args.pretrained_model)),
+            "device": str(model.device),
+            "precision": model.precision,
+            "batch_size": args.batch_size,
+            "batch_mode": args.batch_mode,
+            "preprocess_workers": args.preprocess_workers,
+            "file_count": len(paths),
+            "total_seconds": total_seconds,
+            "files_per_second": len(paths) / total_seconds,
+        }
+        print(json.dumps(result, indent=2, sort_keys=True))
+        return
 
     preprocess_seconds = 0.0
     preprocess_worker_seconds = 0.0
@@ -96,7 +131,14 @@ def _run_end_to_end(args: argparse.Namespace, paths: list[Path]) -> None:
         nonlocal model_seconds
         n_wins = np.stack([item[1] for item in prepared], axis=0)
         max_steps = int(np.max(n_wins))
-        x = np.stack([item[0][:max_steps] for item in prepared], axis=0)
+        # Pad each sample's real segments [n_wins_i, 1, n_mels, seg_length] up to
+        # the chunk max_steps with zeros (masked by n_wins). Previously this used
+        # `item[0][:max_steps]`, which silently truncated shorter samples and
+        # then raised on ragged shapes under np.stack — mixed/ragged lengths
+        # were unbenchmarkable.
+        x = np.zeros((len(prepared), max_steps, 1, cfg.n_mels, cfg.seg_length), dtype=np.float32)
+        for j, (seg, nw) in enumerate(prepared):
+            x[j, : int(nw)] = seg[: int(nw)]
         n_wins_values.extend(int(value) for value in n_wins.reshape(-1))
         model_start = time.perf_counter()
         model.predict_segments(x, n_wins)
@@ -133,6 +175,11 @@ def _run_end_to_end(args: argparse.Namespace, paths: list[Path]) -> None:
     n_wins_array = np.asarray(n_wins_values, dtype=np.int32)
     result = {
         "mode": "end_to_end",
+        # This script's own scheduler is naive in-order chunking with exact
+        # chunk-max padding (no length sort, no bucket rounding). It differs from
+        # predict_batch's length-aware scheduler; use --use_predict_batch to
+        # benchmark the real one. Labeled explicitly so results are not misread.
+        "scheduler": "naive_in_order",
         "checkpoint": str(Path(args.pretrained_model)),
         "device": str(model.device),
         "precision": model.precision,
@@ -166,6 +213,13 @@ def main() -> None:
     parser.add_argument("--csv_deg")
     parser.add_argument("--preprocess_workers", type=int, default=1)
     parser.add_argument("--channel", type=int)
+    parser.add_argument("--length_bucket", type=int, default=None,
+                        help="predict_batch scheduler bucket grid (only with --use_predict_batch)")
+    parser.add_argument("--use_predict_batch", action="store_true",
+                        help="benchmark the real predict_batch scheduler (length-aware, bucket-padded) "
+                             "instead of this script's naive in-order chunking")
+    parser.add_argument("--batch_mode", choices=["fixed", "cost_aware"], default="fixed",
+                        help="predict_batch batch_mode (only with --use_predict_batch)")
     args = parser.parse_args()
 
     paths = _collect_paths(args)

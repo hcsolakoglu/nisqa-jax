@@ -1,5 +1,6 @@
 {
   "conversion_version": 4,
+  "metadata_sha256": "827c45c398fb0825611efb1ef33382e93d02c03ecb3ca23b4a2b7a3db95fba18",
   "model_config": {
     "cnn_model": "adapt",
     "cnn_pool_1": [
@@ -25,17 +26,14 @@
       "sr": null,
       "win_length_seconds": 0.02
     },
-    "model_name": "NISQA_DIM",
+    "model_name": "NISQA",
     "output_names": [
-      "mos",
-      "noi",
-      "dis",
-      "col",
-      "loud"
+      "mos"
     ],
     "pool": "att",
-    "source_path": "nisqa.tar",
-    "source_sha256": "7ec4cf937514dd3f8860b21e66fabd8ca87a168572675ef8d979c4c4ad2e805c",
+    "source_name": "NISQAv2_mos_only",
+    "source_path": "nisqa_mos_only.tar",
+    "source_sha256": "16b2632bea0a481b1bba485587a8da2265f2c7797b525712ae0c072986ee783c",
     "td": "self_att",
     "td_2": "skip",
     "td_lstm_bidirectional": null,
@@ -45,14 +43,10 @@
     "td_sa_nhead": 1,
     "td_sa_num_layers": 2
   },
-  "model_name": "NISQA_DIM",
-  "npz_sha256": "461591eac5cfb7fe245e2fac7427003eb13bd4bd51d60bc7644288a9f1cfccd9",
+  "model_name": "NISQA",
+  "npz_sha256": "4ecab66de14ddf27ae7456f9463da835d6d028b440866adf6e4db11654a343c9",
   "output_names": [
-    "mos",
-    "noi",
-    "dis",
-    "col",
-    "loud"
+    "mos"
   ],
   "shape_manifest": {
     "cnn/conv1/b": [
@@ -109,108 +103,24 @@
       64,
       64
     ],
-    "pool_layers/0/linear1/b": [
+    "pool/linear1/b": [
       128
     ],
-    "pool_layers/0/linear1/w": [
+    "pool/linear1/w": [
       64,
       128
     ],
-    "pool_layers/0/linear2/b": [
+    "pool/linear2/b": [
       1
     ],
-    "pool_layers/0/linear2/w": [
+    "pool/linear2/w": [
       128,
       1
     ],
-    "pool_layers/0/linear3/b": [
+    "pool/linear3/b": [
       1
     ],
-    "pool_layers/0/linear3/w": [
-      64,
-      1
-    ],
-    "pool_layers/1/linear1/b": [
-      128
-    ],
-    "pool_layers/1/linear1/w": [
-      64,
-      128
-    ],
-    "pool_layers/1/linear2/b": [
-      1
-    ],
-    "pool_layers/1/linear2/w": [
-      128,
-      1
-    ],
-    "pool_layers/1/linear3/b": [
-      1
-    ],
-    "pool_layers/1/linear3/w": [
-      64,
-      1
-    ],
-    "pool_layers/2/linear1/b": [
-      128
-    ],
-    "pool_layers/2/linear1/w": [
-      64,
-      128
-    ],
-    "pool_layers/2/linear2/b": [
-      1
-    ],
-    "pool_layers/2/linear2/w": [
-      128,
-      1
-    ],
-    "pool_layers/2/linear3/b": [
-      1
-    ],
-    "pool_layers/2/linear3/w": [
-      64,
-      1
-    ],
-    "pool_layers/3/linear1/b": [
-      128
-    ],
-    "pool_layers/3/linear1/w": [
-      64,
-      128
-    ],
-    "pool_layers/3/linear2/b": [
-      1
-    ],
-    "pool_layers/3/linear2/w": [
-      128,
-      1
-    ],
-    "pool_layers/3/linear3/b": [
-      1
-    ],
-    "pool_layers/3/linear3/w": [
-      64,
-      1
-    ],
-    "pool_layers/4/linear1/b": [
-      128
-    ],
-    "pool_layers/4/linear1/w": [
-      64,
-      128
-    ],
-    "pool_layers/4/linear2/b": [
-      1
-    ],
-    "pool_layers/4/linear2/w": [
-      128,
-      1
-    ],
-    "pool_layers/4/linear3/b": [
-      1
-    ],
-    "pool_layers/4/linear3/w": [
+    "pool/linear3/w": [
       64,
       1
     ],
@@ -308,6 +218,7 @@
       64
     ]
   },
-  "source_path": "nisqa.tar",
-  "source_sha256": "7ec4cf937514dd3f8860b21e66fabd8ca87a168572675ef8d979c4c4ad2e805c"
+  "source_name": "NISQAv2_mos_only",
+  "source_path": "nisqa_mos_only.tar",
+  "source_sha256": "16b2632bea0a481b1bba485587a8da2265f2c7797b525712ae0c072986ee783c"
 }

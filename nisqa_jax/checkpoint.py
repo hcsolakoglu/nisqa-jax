@@ -10,7 +10,13 @@ from typing import Any, Sequence
 import jax
 import numpy as np
 
-from .config import FeatureConfig, ModelConfig, config_from_checkpoint_args
+from .config import (
+    FeatureConfig,
+    ModelConfig,
+    config_from_checkpoint_args,
+    derive_output_names,
+    validate_model_config,
+)
 from .model import NisqaJaxModel, Precision, _validate_precision
 
 CONVERSION_VERSION = 4
@@ -51,6 +57,38 @@ def _sha256(path: Path) -> str:
     return h.hexdigest()
 
 
+# Fields excluded from the canonical metadata checksum: the two file-reference
+# hashes are not part of the semantic metadata (npz_sha256 pins the .npz bytes;
+# metadata_sha256 is this checksum itself — including it would be circular).
+_CANONICAL_HASH_EXCLUDED_FIELDS: frozenset[str] = frozenset({"npz_sha256", "metadata_sha256"})
+
+
+def canonical_metadata_checksum(metadata: dict[str, Any]) -> str:
+    """Deterministic SHA-256 of an artifact's semantic metadata payload.
+
+    The canonical form is ``json.dumps(metadata, sort_keys=True, separators=(",", ":"))``
+    over a copy of ``metadata`` with the file-reference hash fields
+    (``npz_sha256``, ``metadata_sha256``) removed. This is:
+
+      * **Stable** — independent of pretty-printing/whitespace, so re-serializing
+        the same logical metadata yields the same digest.
+      * **Non-circular** — the checksum never covers itself (``metadata_sha256``
+        is stripped before hashing), so embedding it in the JSON is safe and
+        verifiable by recomputing over the stripped payload.
+      * **Externally verifiable** — a release ``CHECKSUMS`` manifest can list the
+        raw ``.json`` file SHA-256 (catches any byte change) AND/OR this canonical
+        digest (catches semantic changes regardless of formatting). The loader
+        itself cross-checks ``npz_sha256`` (JSON) against the ``.npz`` file for
+        internal JSON<->NPZ consistency.
+
+    Older artifacts (pre-``metadata_sha256``) lack this field; the loader warns
+    (not fails) for backward compatibility, matching the ``npz_sha256`` policy.
+    """
+    payload = {k: v for k, v in metadata.items() if k not in _CANONICAL_HASH_EXCLUDED_FIELDS}
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
 def _torch() -> Any:
     try:
         import torch
@@ -60,6 +98,95 @@ def _torch() -> Any:
             "Use a pre-converted JAX .npz artifact for standalone inference."
         ) from exc
     return torch
+
+
+def _torch_version_lt(version: str, major: int, minor: int) -> bool:
+    """Return True if ``version`` is strictly older than ``major.minor``.
+
+    Parses the leading numeric major/minor numerically (not lexicographically)
+    so suffixes like ``+cu128``, ``.dev0``, ``.rc1`` and multi-digit minor
+    numbers are handled correctly. Examples::
+
+        _torch_version_lt("1.12.1+cpu", 1, 13) -> True
+        _torch_version_lt("1.13.0", 1, 13)     -> False
+        _torch_version_lt("2.11.0+cu128", 1, 13) -> False
+        _torch_version_lt("1.9.0", 1, 13)      -> True
+        _torch_version_lt("1.10.2.dev0", 1, 13) -> True
+
+    A non-parseable version is treated as 0.0 (safely "old") so the caller's
+    "too old" branch fires rather than silently passing an unsupported torch.
+    """
+    # Strip any local/build suffix after '+' and pre-release suffix after a
+    # non-numeric component, then take the leading numeric dotted parts.
+    base = version.split("+", 1)[0]
+    parts: list[int] = []
+    for part in base.split("."):
+        # Stop at the first non-numeric component (e.g. "0" in "1.13.0.dev0"
+        # is numeric; "dev0" is not -> we keep [1,13,0]).
+        digits = ""
+        for ch in part:
+            if ch.isdigit():
+                digits += ch
+            else:
+                break
+        if digits == "":
+            break
+        parts.append(int(digits))
+    ver_major = parts[0] if len(parts) > 0 else 0
+    ver_minor = parts[1] if len(parts) > 1 else 0
+    return (ver_major, ver_minor) < (major, minor)
+
+
+def _load_torch_checkpoint(torch: Any, path: Path) -> dict[str, Any]:
+    """Load a NISQA .tar checkpoint with ``weights_only=True`` (safe unpickle).
+
+    The shipped NISQA .tar checkpoints contain only an ``args`` dict of plain
+    Python scalars/strings and a ``model_state_dict`` of tensors, all of which
+    are on PyTorch's ``weights_only=True`` safelist. Forcing ``weights_only=True``
+    prevents arbitrary-code-execution via a maliciously crafted checkpoint
+    (pickle deserialization of untrusted data).
+
+    We never silently fall back to unsafe pickle (``weights_only=False``). If the
+    installed torch is too old to support ``weights_only`` (pre-1.13), we raise an
+    actionable error rather than downgrading to unsafe loading. If a checkpoint
+    genuinely requires unsafe loading (it carries a non-safelist type), that is a
+    strong signal it is not a stock NISQA checkpoint and conversion is refused.
+    """
+    # `weights_only` was added in torch 1.13 and became the default in 2.6. We
+    # pass it explicitly to be explicit about the safety contract on every torch
+    # version that supports it.
+    try:
+        return torch.load(path, map_location="cpu", weights_only=True)
+    except TypeError:
+        # Distinguish "torch too old for weights_only kwarg" from a TypeError
+        # raised inside the unpickler. The kwarg-missing case is detected by
+        # numerically parsing the torch major.minor version: <1.13 lacks
+        # weights_only entirely. Parsing numerically (not lexicographic string
+        # compare) is robust to suffixes like "2.11.0+cu128", "1.13.0.dev0",
+        # "1.12.1+cpu", and multi-digit minor numbers (e.g. "1.13" vs "1.9").
+        version = getattr(torch, "__version__", "0")
+        if _torch_version_lt(version, 1, 13):
+            raise RuntimeError(
+                f"Installed torch ({version}) does not support weights_only=True "
+                "(requires torch>=1.13). Upgrade torch before converting checkpoints, "
+                "or use a pre-converted JAX .npz artifact. Unsafe pickle loading of "
+                "untrusted checkpoints is refused by design."
+            ) from None
+        raise
+    except OSError:
+        # Filesystem-level errors (missing file, permission, truncation) propagate
+        # unchanged — they are not safety-policy violations.
+        raise
+    except Exception as exc:
+        # weights_only=True rejected the checkpoint payload (non-safelist type,
+        # e.g. a custom class). This is expected for non-stock checkpoints; do
+        # NOT retry with weights_only=False.
+        raise RuntimeError(
+            f"Checkpoint {path.name} could not be loaded with weights_only=True "
+            f"(safe unpickle). It may carry non-safelist Python objects, which is not "
+            f"expected for a stock NISQA checkpoint. Unsafe pickle loading is refused "
+            f"by design. Use a pre-converted JAX .npz artifact. Underlying error: {exc}"
+        ) from exc
 
 
 def _np(tensor: Any) -> np.ndarray:
@@ -146,7 +273,8 @@ def _lstm(sd: dict[str, Any]) -> dict[str, Any]:
     return {"forward": _lstm_direction(sd, ""), "reverse": _lstm_direction(sd, "_reverse")}
 
 
-def _pool_att(sd: dict[str, Any], prefix: str) -> dict[str, np.ndarray]:
+def _pool_att(sd: dict[str, Any], prefix: str) -> dict[str, dict[str, np.ndarray]]:
+    # Each entry is a _linear() sub-dict {"w": ..., "b": ...}, not a bare array.
     return {
         "linear1": _linear(sd, f"{prefix}.model.linear1"),
         "linear2": _linear(sd, f"{prefix}.model.linear2"),
@@ -154,7 +282,7 @@ def _pool_att(sd: dict[str, Any], prefix: str) -> dict[str, np.ndarray]:
     }
 
 
-def _pool_last_step_bi(sd: dict[str, Any]) -> dict[str, np.ndarray]:
+def _pool_last_step_bi(sd: dict[str, Any]) -> dict[str, dict[str, np.ndarray]]:
     return {"linear": _linear(sd, "pool.model.linear")}
 
 
@@ -164,7 +292,7 @@ def _flatten(tree: Any, prefix: str = "") -> dict[str, np.ndarray]:
         for key, value in tree.items():
             out.update(_flatten(value, f"{prefix}{key}/"))
         return out
-    if isinstance(tree, (tuple, list)):
+    if isinstance(tree, tuple | list):
         out = {}
         for idx, value in enumerate(tree):
             out.update(_flatten(value, f"{prefix}{idx}/"))
@@ -209,10 +337,16 @@ def _config_metadata(cfg: ModelConfig) -> dict[str, Any]:
 
 def _config_from_metadata(data: dict[str, Any]) -> ModelConfig:
     feature = FeatureConfig(**data["feature"])
+    # Backward-compatible fallback: pre-source-name artifacts (conversion
+    # version < this field's introduction) lack 'source_name'. Default to None
+    # so older shipped JSON still loads; the CSV lane treats None as "unknown".
+    raw_name = data.get("source_name")
+    source_name = raw_name if isinstance(raw_name, str) and raw_name else None
     return ModelConfig(
         source_path=Path(data["source_path"]),
         source_sha256=data["source_sha256"],
         model_name=data["model_name"],
+        source_name=source_name,
         cnn_model=data["cnn_model"],
         td=data["td"],
         td_2=data["td_2"],
@@ -269,7 +403,7 @@ def convert_checkpoint(
     path = Path(checkpoint_path).expanduser().resolve()
     digest = _sha256(path)
     torch = _torch()
-    checkpoint = torch.load(path, map_location="cpu")
+    checkpoint = _load_torch_checkpoint(torch, path)
     cfg = config_from_checkpoint_args(checkpoint["args"], path, digest)
     params = _convert_state_dict(checkpoint["model_state_dict"], cfg)
 
@@ -279,7 +413,10 @@ def convert_checkpoint(
         stem = f"{cfg.cache_key}.v{CONVERSION_VERSION}"
         flat = _flatten(params)
         npz_path = cache / f"{stem}.npz"
-        np.savez(npz_path, **flat)
+        # numpy's `savez` stubs do not model `**dict[str, ndarray]` unpacking and
+        # mis-resolve the kwargs against an unrelated overload (arg-type on a
+        # `bool` param); the runtime call is correct. Justified narrow ignore.
+        np.savez(npz_path, **flat)  # type: ignore[arg-type]
         metadata = {
             "conversion_version": CONVERSION_VERSION,
             "source_path": path.name,
@@ -289,7 +426,29 @@ def convert_checkpoint(
             # source checkpoint hash. Older artifacts lack this field and the
             # loader warns (not fails) for backward compatibility.
             "npz_sha256": _sha256(npz_path),
+            # Canonical checksum of the metadata payload (everything except the
+            # two file-reference hashes: npz_sha256 and metadata_sha256 itself).
+            # Externally verifiable: a release CHECKSUMS manifest can list this
+            # value for the .json sidecar so downstream consumers can confirm the
+            # metadata content is byte-for-byte the converted canonical form,
+            # independent of pretty-printing whitespace. See
+            # ``canonical_metadata_checksum`` for the exact algorithm.
+            "metadata_sha256": canonical_metadata_checksum(
+                {
+                    "conversion_version": CONVERSION_VERSION,
+                    "source_path": path.name,
+                    "source_sha256": digest,
+                    "model_name": cfg.model_name,
+                    "source_name": cfg.source_name,
+                    "output_names": list(cfg.output_names),
+                    "model_config": _config_metadata(cfg),
+                    "shape_manifest": _shape_manifest(params),
+                }
+            ),
             "model_name": cfg.model_name,
+            # Stable original training-run identity from args['name']; consumed
+            # by the CSV lane. None for pre-source-name artifacts.
+            "source_name": cfg.source_name,
             "output_names": cfg.output_names,
             "model_config": _config_metadata(cfg),
             "shape_manifest": _shape_manifest(params),
@@ -306,7 +465,9 @@ def _verify_artifact_integrity(npz_path: Path, metadata: dict[str, Any]) -> dict
       1. Exact tensor-key equality with ``shape_manifest`` (no missing/extra).
       2. Each tensor's shape matches the manifest entry.
       3. Each tensor's dtype is float32-compatible (floating-point).
-      4. The npz SHA256 matches ``npz_sha256`` when present (older artifacts
+      4. Each tensor is finite (no NaN/Inf) — non-finite weights corrupt every
+         forward pass and usually signal conversion corruption or bit-rot.
+      5. The npz SHA256 matches ``npz_sha256`` when present (older artifacts
          lack this field -> warn, do not fail, for backward compatibility).
     """
     manifest = metadata.get("shape_manifest")
@@ -348,7 +509,19 @@ def _verify_artifact_integrity(npz_path: Path, metadata: dict[str, Any]) -> dict
                     f"Artifact {npz_path.name} tensor {name!r} has non-float32-compatible dtype "
                     f"{arr.dtype}; expected a floating-point dtype. The artifact may be corrupted."
                 )
-            arrays[name] = arr.astype(np.float32, copy=True)
+            arr32 = arr.astype(np.float32, copy=True)
+            # Non-finite weights (NaN/Inf) silently turn every prediction into
+            # NaN/Inf. Reject up front so corruption is attributed to the artifact,
+            # not reported as a model bug downstream.
+            if not np.isfinite(arr32).all():
+                bad = np.argwhere(~np.isfinite(arr32))
+                first = tuple(int(x) for x in bad[0]) if len(bad) else ()
+                raise ValueError(
+                    f"Artifact {npz_path.name} tensor {name!r} contains non-finite values "
+                    f"(NaN/Inf) at {len(bad)} position(s), first at index {first}. "
+                    "The weight file is corrupted; re-convert the source checkpoint."
+                )
+            arrays[name] = arr32
 
     expected_hash = metadata.get("npz_sha256")
     if expected_hash is None:
@@ -367,6 +540,81 @@ def _verify_artifact_integrity(npz_path: Path, metadata: dict[str, Any]) -> dict
     return arrays
 
 
+def _validate_loaded_metadata(metadata: dict[str, Any], cfg: ModelConfig, json_path: Path) -> None:
+    """Semantic validation of the loaded JSON metadata against the rebuilt config.
+
+    Catches metadata tampering/corruption that structural (key/shape/dtype) checks
+    cannot: top-level fields inconsistent with the embedded ``model_config``,
+    output_names relabeled to lie about the architecture, and unsupported
+    architecture combos smuggled past the source-args audit (``_config_from_metadata``
+    builds the dataclass directly without re-running that audit). The canonical
+    ``metadata_sha256`` is verified separately in ``load_converted_checkpoint`` as a
+    final blanket guard, after the more specific structural checks run.
+    """
+    # Top-level scalar fields must agree with the embedded model_config.
+    top_model_name = metadata.get("model_name")
+    if top_model_name != cfg.model_name:
+        raise ValueError(
+            f"Artifact {json_path.name} top-level model_name {top_model_name!r} does not match "
+            f"model_config.model_name {cfg.model_name!r}. The metadata is inconsistent; "
+            "re-convert the source checkpoint."
+        )
+    top_outputs = tuple(metadata.get("output_names") or ())
+    if top_outputs != tuple(cfg.output_names):
+        raise ValueError(
+            f"Artifact {json_path.name} top-level output_names {top_outputs!r} do not match "
+            f"model_config output_names {tuple(cfg.output_names)!r}. The metadata is inconsistent; "
+            "re-convert the source checkpoint."
+        )
+    # source_name: only cross-check when the top-level field is present (older
+    # artifacts lack it); the model_config value is the source of truth.
+    if "source_name" in metadata:
+        top_src = metadata.get("source_name")
+        if top_src != cfg.source_name:
+            raise ValueError(
+                f"Artifact {json_path.name} top-level source_name {top_src!r} does not match "
+                f"model_config.source_name {cfg.source_name!r}. The metadata is inconsistent; "
+                "re-convert the source checkpoint."
+            )
+    # Re-derive output names from the architecture combo and confirm the config
+    # agrees — catches a tampered model_config whose output_names were relabeled
+    # to misrepresent the head (e.g. a mos checkpoint relabeled as naturalness).
+    expected = derive_output_names(cfg.model_name, (cfg.model_name, cfg.cnn_model, cfg.td, cfg.pool))
+    if tuple(cfg.output_names) != expected:
+        raise ValueError(
+            f"Artifact {json_path.name} output_names {tuple(cfg.output_names)!r} are inconsistent "
+            f"with its architecture (expected {expected!r}). The metadata may be tampered; "
+            "re-convert the source checkpoint."
+        )
+    # Full structural/td-specific audit on the rebuilt config.
+    validate_model_config(cfg)
+
+
+def _verify_metadata_checksum(metadata: dict[str, Any], json_path: Path) -> None:
+    """Final blanket guard: verify the canonical ``metadata_sha256``.
+
+    Runs after the specific semantic + structural checks so those emit precise
+    diagnostics for the cases they cover; this catches any remaining metadata
+    field edit (e.g. ``source_sha256`` tampering) not otherwise guarded. Older
+    artifacts (pre-``metadata_sha256``) warn, not fail, for backward compatibility.
+    """
+    expected_meta_hash = metadata.get("metadata_sha256")
+    if expected_meta_hash is None:
+        warnings.warn(
+            f"Artifact {json_path.name} metadata lacks 'metadata_sha256'; skipping canonical "
+            "metadata checksum verification. Re-convert the source checkpoint to embed the hash.",
+            stacklevel=3,
+        )
+        return
+    actual = canonical_metadata_checksum(metadata)
+    if actual != expected_meta_hash:
+        raise ValueError(
+            f"Artifact {json_path.name} canonical metadata checksum does not match "
+            "'metadata_sha256'. The metadata has been edited or corrupted; re-convert "
+            "the source checkpoint."
+        )
+
+
 def load_converted_checkpoint(artifact_path: str | Path) -> tuple[ModelConfig, dict[str, Any]]:
     path = Path(artifact_path).expanduser().resolve()
     metadata_path = _metadata_for_artifact(path)
@@ -378,7 +626,13 @@ def load_converted_checkpoint(artifact_path: str | Path) -> tuple[ModelConfig, d
             f"conversion version {CONVERSION_VERSION}. Re-convert the source checkpoint."
         )
     cfg = _config_from_metadata(metadata["model_config"])
+    # 1. Semantic validation: reject tampered/inconsistent metadata early so a
+    #    bad sidecar never reaches the weight loader (specific diagnostics).
+    _validate_loaded_metadata(metadata, cfg, metadata_path)
+    # 2. Structural validation: npz keys/shapes/dtypes/finiteness + npz_sha256.
     arrays = _verify_artifact_integrity(npz_path, metadata)
+    # 3. Canonical metadata checksum: blanket guard for any remaining field edit.
+    _verify_metadata_checksum(metadata, metadata_path)
     params: dict[str, Any] = {}
     for name, value in arrays.items():
         _insert_flat(params, name, value)

@@ -4,11 +4,11 @@ import os, sys, json, tempfile, traceback
 from pathlib import Path
 import numpy as np
 
-ROOT = Path("/media/mithex/NVME 2/Codex Linux/NISQA PORT PROJECT")
+ROOT = Path(os.environ.get("NISQA_JAX_ROOT", Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / "nisqa pytorch"))
-WEIGHTS = ROOT / "weights"
-PT_WEIGHTS = ROOT / "nisqa pytorch" / "weights"
+sys.path.insert(0, str(Path(os.environ.get("NISQA_PT_ROOT", ROOT / "nisqa_pytorch"))))
+WEIGHTS = ROOT / "nisqa_jax" / "weights"
+PT_WEIGHTS = Path(os.environ.get("NISQA_PT_ROOT", ROOT / "nisqa_pytorch")) / "weights"
 
 import jax
 import jax.numpy as jnp

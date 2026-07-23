@@ -9,7 +9,7 @@ import pytest
 import soundfile as sf
 
 ROOT = Path(__file__).resolve().parents[1]
-WEIGHTS_ROOT = Path(os.environ.get("NISQA_JAX_WEIGHTS_DIR", ROOT / "weights"))
+WEIGHTS_ROOT = Path(os.environ.get("NISQA_JAX_WEIGHTS_DIR", ROOT / "nisqa_jax" / "weights"))
 MOS_ONLY = WEIGHTS_ROOT / "nisqa_mos_only.npz"
 
 sys.path.insert(0, str(ROOT))
@@ -69,6 +69,7 @@ def _valid_x_n_wins(model, *, batch: int = 2, steps: int = 16) -> tuple[np.ndarr
 # C1: multi-head self-attention rejected at config boundary
 # ---------------------------------------------------------------------------
 
+
 def test_config_rejects_multi_head_attention() -> None:
     _skip_if_weights_missing()
     args = _base_args(nhead=4)
@@ -97,6 +98,7 @@ def test_config_accepts_missing_nhead() -> None:
 # NOT the checkpoint filename (F4 regression).
 # ---------------------------------------------------------------------------
 
+
 def _tts_args() -> dict:
     """Args matching the shipped nisqa_tts checkpoint (standard CNN, BiLSTM)."""
     cfg, _ = load_converted_checkpoint(WEIGHTS_ROOT / "nisqa_tts.npz")
@@ -114,8 +116,14 @@ def _tts_args() -> dict:
         "td_sa_nhead": cfg.td_sa_nhead,
         "td_sa_num_layers": cfg.td_sa_num_layers,
         "td_sa_h": cfg.td_sa_h,
+        "td_sa_pos_enc": None,
         "td_lstm_h": cfg.td_lstm_h,
         "td_lstm_bidirectional": cfg.td_lstm_bidirectional,
+        # td_lstm_num_layers is not stored on ModelConfig (always 1 for the
+        # implemented BiLSTM path) but is required by the source-args audit.
+        "td_lstm_num_layers": 1,
+        # standard CNN uses an fc_out head (cnn_fc_out_h); not on ModelConfig.
+        "cnn_fc_out_h": 20,
         "ms_sr": f.sr,
         "ms_n_fft": f.n_fft,
         "ms_hop_length": f.hop_length_seconds,
@@ -166,6 +174,7 @@ def test_config_dim_identity_independent_of_filename() -> None:
 # ---------------------------------------------------------------------------
 # C2 / C3: device_segments / predict_segments input validation
 # ---------------------------------------------------------------------------
+
 
 def test_predict_segments_rejects_zero_n_wins() -> None:
     _skip_if_weights_missing()
@@ -256,6 +265,7 @@ def test_predict_segments_accepts_valid_input() -> None:
 # C4: predict_batch([]) rejected
 # ---------------------------------------------------------------------------
 
+
 def test_predict_batch_rejects_empty_input() -> None:
     _skip_if_weights_missing()
     model = load_model(MOS_ONLY, device=default_test_device())
@@ -267,6 +277,7 @@ def test_predict_batch_rejects_empty_input() -> None:
 # C4b: predict_batch batch_size validation (early ValueError, not downstream
 # RuntimeError from range(0, n, 0) ZeroDivisionError)
 # ---------------------------------------------------------------------------
+
 
 def test_predict_batch_rejects_batch_size_zero() -> None:
     _skip_if_weights_missing()
@@ -285,6 +296,7 @@ def test_predict_batch_rejects_negative_batch_size() -> None:
 # ---------------------------------------------------------------------------
 # C5: out-of-range channel produces precise error
 # ---------------------------------------------------------------------------
+
 
 def test_load_melspec_out_of_range_channel_message(tmp_path: Path) -> None:
     _skip_if_weights_missing()
@@ -322,6 +334,7 @@ def test_load_melspec_valid_channel_still_works(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 # C5b: mono channel validation (regression — guard previously inside ndim>1)
 # ---------------------------------------------------------------------------
+
 
 def _write_mono_wav(tmp_path: Path, feat) -> Path:
     sr = int(feat.sr or 48000)
