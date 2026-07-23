@@ -17,7 +17,7 @@ jaxlib==0.4.30
 # https://docs.jax.dev/en/latest/installation.html
 #   jax[cuda12_pip]==0.4.30
 #   jaxlib==0.4.30
-numpy==1.26.4
+numpy==2.2.6
 scipy==1.11.4
 librosa==0.10.2.post1
 pandas==2.1.4

@@ -32,7 +32,7 @@ dependencies = [
   # knob, but staying within 0.4.x avoids surprise breakage of the persistent
   # cache and JIT behavior. Bump only after re-running the full parity suite.
   "jax>=0.4.30,<0.5",
-  "numpy>=1.26,<2",
+  "numpy>=1.26,<3",
   "scipy>=1.11",
   "librosa>=0.10.2",
   "pandas>=2.1",
