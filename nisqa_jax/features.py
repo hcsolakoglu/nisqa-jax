@@ -9,8 +9,21 @@ import soundfile as sf
 from .config import FeatureConfig
 
 
+def _validate_channel(channel: int | None) -> None:
+    """Channel must be None or a true integer (not bool, not float)."""
+    if channel is None:
+        return
+    # bool is a subclass of int; reject it so True/False are not silently treated
+    # as channel 1/0. Floats (e.g. 0.0) are also rejected — a channel index is integral.
+    if isinstance(channel, bool) or not isinstance(channel, int):
+        raise ValueError(
+            f"channel must be None or an int (not bool/float), got {channel!r} ({type(channel).__name__})"
+        )
+
+
 def load_melspec(file_path: str | Path, cfg: FeatureConfig, *, channel: int | None = None) -> np.ndarray:
     path = Path(file_path)
+    _validate_channel(channel)
     try:
         if channel is None:
             y, sr = lb.load(path, sr=cfg.sr)
@@ -79,6 +92,17 @@ def segment_melspec(
         raise ValueError(
             f"n_wins {n_wins} > max_length {cfg.max_segments} --- {file_path}. "
             "Increase max window length ms_max_segments!"
+        )
+
+    # Reject non-finite mel-spectrograms with a path-bearing message: a corrupt
+    # or all-silent WAV can yield NaN/Inf bins that would silently propagate to
+    # NaN scores. predict_segments also guards this, but only the feature path
+    # knows the originating file path.
+    if not np.isfinite(segments).all():
+        n_bad = int(np.sum(~np.isfinite(segments)))
+        raise ValueError(
+            f"Mel-spectrogram contains {n_bad} non-finite (NaN/Inf) values for file: {file_path}. "
+            "The audio may be corrupt or empty."
         )
 
     # Return ONLY the real [n_wins, 1, n_mels, seg_length] segments (no max_segments

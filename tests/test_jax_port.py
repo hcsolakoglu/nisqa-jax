@@ -708,10 +708,10 @@ def test_predict_batch_auto_batch_recovers_from_oom(monkeypatch: pytest.MonkeyPa
 
     real_predict = model.predict_segments
 
-    def predict_that_ooms_above_two(x, n_wins):
+    def predict_that_ooms_above_two(x, n_wins, **kwargs):
         if x.shape[0] > 2:
             raise RuntimeError("RESOURCE_EXHAUSTED: Out of memory trying to allocate")
-        return real_predict(x, n_wins)
+        return real_predict(x, n_wins, **kwargs)
 
     monkeypatch.setattr("nisqa_jax.predict.estimate_n_wins", fake_estimate_n_wins)
     monkeypatch.setattr("nisqa_jax.predict.preprocess_file", fake_preprocess_file)
@@ -736,7 +736,7 @@ def test_predict_batch_auto_batch_off_propagates_oom(monkeypatch: pytest.MonkeyP
         x = np.zeros((4, 1, cfg.n_mels, cfg.seg_length), dtype=np.float32)
         return x, np.asarray(4, dtype=np.int32)
 
-    def predict_that_ooms(x, n_wins):
+    def predict_that_ooms(x, n_wins, **kwargs):
         raise RuntimeError("RESOURCE_EXHAUSTED: Out of memory")
 
     monkeypatch.setattr("nisqa_jax.predict.estimate_n_wins", fake_estimate_n_wins)
@@ -761,7 +761,7 @@ def test_predict_batch_auto_batch_oom_at_bs1_still_raises(monkeypatch: pytest.Mo
         x = np.zeros((4, 1, cfg.n_mels, cfg.seg_length), dtype=np.float32)
         return x, np.asarray(4, dtype=np.int32)
 
-    def predict_always_ooms(x, n_wins):
+    def predict_always_ooms(x, n_wins, **kwargs):
         raise RuntimeError("RESOURCE_EXHAUSTED: Out of memory")
 
     monkeypatch.setattr("nisqa_jax.predict.estimate_n_wins", fake_estimate_n_wins)
