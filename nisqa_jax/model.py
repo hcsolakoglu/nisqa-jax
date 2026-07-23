@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 import jax
 import jax.numpy as jnp
@@ -17,7 +17,7 @@ Precision = Literal["float32", "bf16"]
 def _validate_precision(precision: str) -> Precision:
     if precision not in {"float32", "bf16"}:
         raise ValueError(f"precision must be 'float32' or 'bf16', got {precision!r}")
-    return precision  # type: ignore[return-value]
+    return cast(Precision, precision)
 
 
 def _compute_dtype(precision: Precision) -> jnp.dtype:

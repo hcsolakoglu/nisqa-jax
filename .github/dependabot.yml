@@ -1,0 +1,30 @@
+# Dependabot configuration for pinned GitHub Actions and Python tooling.
+#
+# CI actions are pinned to immutable commit SHAs (see .github/workflows/ci.yml)
+# so a compromised tag cannot replace the action we run. Dependabot opens PRs
+# to bump those SHAs (and the pinned ruff/mypy/build versions) after they age
+# in; each bump PR must pass the full CI gate before merge.
+version: 2
+updates:
+  # GitHub Actions: bump the SHA-pinned actions in ci.yml.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "ci: "
+    labels: ["ci", "dependencies"]
+
+  # pip: bump the pinned CI tool versions (ruff/mypy/build) declared in ci.yml.
+  # (pip updates target pyproject.toml / requirements files; the CI tool pins
+  # live in the workflow YAML, so this keeps runtime deps current while the
+  # workflow pins are reviewed manually via the actions updater above.)
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps: "
+    labels: ["ci", "dependencies"]

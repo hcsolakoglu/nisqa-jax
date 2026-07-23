@@ -1,13 +1,22 @@
 """JAX inference port for the shipped NISQA checkpoints."""
 
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _pkg_version
+
 from .checkpoint import convert_checkpoint, load_converted_checkpoint, load_model, prewarm
 from .config import FeatureConfig, ModelConfig
 from .model import Precision
+
+try:
+    __version__ = _pkg_version("nisqa-jax")
+except PackageNotFoundError:  # editable/source checkout without install
+    __version__ = "0.0.0+unknown"
 
 __all__ = [
     "FeatureConfig",
     "ModelConfig",
     "Precision",
+    "__version__",
     "convert_checkpoint",
     "load_converted_checkpoint",
     "load_model",

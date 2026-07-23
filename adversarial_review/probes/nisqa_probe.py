@@ -6,10 +6,15 @@ import numpy as np
 
 warnings.filterwarnings("ignore")
 
-ROOT = Path("/media/mithex/NVME 2/Codex Linux/NISQA PORT PROJECT")
+# Repo root: 3 levels up from adversarial_review/probes/<this>. Override with
+# NISQA_JAX_ROOT for non-standard layouts. WEIGHTS now points at the in-package
+# nisqa_jax/weights/ location (the canonical post-relocation path).
+ROOT = Path(os.environ.get("NISQA_JAX_ROOT", Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(ROOT))
-WEIGHTS = ROOT / "weights"
-PT_ROOT = ROOT / "nisqa pytorch"
+WEIGHTS = ROOT / "nisqa_jax" / "weights"
+# Optional PyTorch reference root for parity probes (set NISQA_PT_ROOT); probes
+# that need torch skip gracefully if it is unset.
+PT_ROOT = Path(os.environ.get("NISQA_PT_ROOT", ROOT / "nisqa_pytorch"))
 PT_WEIGHTS = PT_ROOT / "weights"
 
 import jax

@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, r2-release]
+    branches: [main, r2-release, fixall-release]
   pull_request:
     branches: [main]
 
@@ -11,29 +11,45 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# Tool pins: every CI tool is pinned to an exact version so a upstream release
+# cannot silently change the gate. Bump deliberately and re-run the full suite.
+# GitHub Actions are pinned to immutable commit SHAs (not floating tags) so a
+# compromised tag cannot replace the action we run; Dependabot (see
+# .github/dependabot.yml) opens PRs to bump these SHAs after they age in.
 jobs:
   lint:
-    name: Lint (ruff)
+    name: Lint (ruff ${{ matrix.ruff }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        ruff: ["0.6.9"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
         with:
           python-version: "3.10"
           cache: pip
-      - run: pip install ruff
+      - run: pip install "ruff==${{ matrix.ruff }}"
       - run: ruff check .
 
   typecheck:
-    name: Typecheck (mypy)
+    name: Typecheck (mypy ${{ matrix.mypy }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        mypy: ["1.11.2"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
         with:
           python-version: "3.10"
           cache: pip
-      - run: pip install mypy numpy
+      # mypy needs numpy stubs (and jax stubs are not published; the repo's
+      # [tool.mypy] uses ignore_missing_imports for jax). Pin numpy to the
+      # tested 1.26.x line so the stubs match the runtime.
+      - run: pip install "mypy==${{ matrix.mypy }}" "numpy==1.26.4"
       # Lenient mypy over the package only (tests/, adversarial_review/, and
       # bench scripts are excluded via [tool.mypy] in pyproject.toml).
       - run: mypy nisqa_jax/
@@ -44,56 +60,92 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # Supported Python matrix: 3.10, 3.11, 3.12 (the declared
+        # requires-python >=3.10 bound). JAX matrix: lower bound 0.4.30 (the
+        # oldest supported 0.4.x) plus an upper-qualified 0.4.38 to catch
+        # regressions near the top of the supported <0.5 range. Both axes are
+        # fully exercised so a version-specific break is caught at PR time.
         python-version: ["3.10", "3.11", "3.12"]
-        jax: ["0.4.30"]
+        jax: ["0.4.30", "0.4.38"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
       - run: pip install -e ".[test]" "jax==${{ matrix.jax }}" "jaxlib==${{ matrix.jax }}"
-      - name: Artifact checksum + manifest verification
-        run: python scripts/verify_artifacts.py
-      - name: pytest
+      - name: Artifact checksum + manifest + metadata verification (strict)
+        run: python scripts/verify_artifacts.py --strict
+      - name: Golden-vector parity gate (self-contained, no torch)
+        # The golden gate is the primary CI correctness gate. It must NEVER
+        # skip — a skip means the golden fixtures or shipped artifacts are
+        # missing, which is a release-blocking error. Fail if any test skips.
+        env:
+          JAX_PLATFORMS: cpu
+        run: |
+          set -o pipefail
+          pytest -q tests/test_golden_parity.py 2>&1 | tee /tmp/golden.txt
+          # The summary line must not contain "skipped" with a non-zero count.
+          ! grep -qP '\d+ skipped' /tmp/golden.txt
+      - name: Full CPU test suite
+        # Live PyTorch parity tests (test_jax_port.py -m parity) are NOT run
+        # here: they require the source .tar checkpoints + PyTorch reference
+        # source repo, which are not available in CI. They skip cleanly
+        # (torch is not installed in the [test] extra). The self-contained
+        # golden parity gate above is the CI correctness proof.
         env:
           JAX_PLATFORMS: cpu
         run: pytest -q
 
   build:
-    name: Build + clean-room install smoke test
+    name: Build + clean-room install + package-content gate
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
         with:
           python-version: "3.10"
           cache: pip
-      - run: pip install build
+      - run: pip install "build==1.2.2.post1"
       - name: Build sdist + wheel
         run: python -m build
-      - name: Clean-room install
+      - name: Package-content gate (wheel + sdist carry required files)
+        run: pytest -q tests/test_build_contents.py
+      - name: Clean-room install from wheel
         run: |
-          python -m venv /tmp/cleanroom
-          /tmp/cleanroom/bin/pip install --no-deps dist/*.whl
-          /tmp/cleanroom/bin/pip install "jax==0.4.30" "jaxlib==0.4.30" \
+          python -m venv /tmp/cleanroom_whl
+          /tmp/cleanroom_whl/bin/pip install --no-deps dist/*.whl
+          /tmp/cleanroom_whl/bin/pip install "jax==0.4.30" "jaxlib==0.4.30" \
             "numpy>=1.26,<2" "scipy>=1.11" "librosa>=0.10.2" "pandas>=2.1" "soundfile>=0.12"
-      - name: Import smoke test
+      - name: Clean-room install from sdist
+        run: |
+          python -m venv /tmp/cleanroom_sdist
+          /tmp/cleanroom_sdist/bin/pip install --no-deps dist/*.tar.gz
+          /tmp/cleanroom_sdist/bin/pip install "jax==0.4.30" "jaxlib==0.4.30" \
+            "numpy>=1.26,<2" "scipy>=1.11" "librosa>=0.10.2" "pandas>=2.1" "soundfile>=0.12"
+      - name: Import + WEIGHTS_DIR smoke (wheel)
         run: |
           cd /tmp
-          /tmp/cleanroom/bin/python -c "import nisqa_jax, weights; print('import OK:', weights.WEIGHTS_DIR)"
-      - name: CPU predict smoke test
+          /tmp/cleanroom_whl/bin/python -c "import nisqa_jax; from nisqa_jax.weights import WEIGHTS_DIR; import os; assert os.path.isdir(WEIGHTS_DIR); assert (WEIGHTS_DIR / 'nisqa_mos_only.npz').exists(); print('import OK:', WEIGHTS_DIR)"
+      - name: Import + WEIGHTS_DIR smoke (sdist)
+        run: |
+          cd /tmp
+          /tmp/cleanroom_sdist/bin/python -c "import nisqa_jax; from nisqa_jax.weights import WEIGHTS_DIR; import os; assert os.path.isdir(WEIGHTS_DIR); assert (WEIGHTS_DIR / 'nisqa_mos_only.npz').exists(); print('import OK:', WEIGHTS_DIR)"
+      - name: CPU predict smoke (wheel)
         env:
           JAX_PLATFORMS: cpu
         run: |
           cd /tmp
-          /tmp/cleanroom/bin/python - <<'PY'
+          /tmp/cleanroom_whl/bin/python - <<'PY'
           import numpy as np, soundfile as sf
           sr=16000; t=np.linspace(0,1.5,int(sr*1.5),endpoint=False)
           sf.write('/tmp/smoke_sine.wav', (0.3*np.sin(2*np.pi*220*t)).astype(np.float32), sr)
-          from weights import WEIGHTS_DIR
+          from nisqa_jax.weights import WEIGHTS_DIR
           print('WEIGHTS:', WEIGHTS_DIR / 'nisqa_mos_only.npz')
           PY
-          /tmp/cleanroom/bin/nisqa-jax --mode predict_file \
-            --pretrained_model "$(/tmp/cleanroom/bin/python -c 'from weights import WEIGHTS_DIR; print(WEIGHTS_DIR / "nisqa_mos_only.npz")')" \
+          /tmp/cleanroom_whl/bin/nisqa-jax --mode predict_file \
+            --pretrained_model "$(/tmp/cleanroom_whl/bin/python -c 'from nisqa_jax.weights import WEIGHTS_DIR; print(WEIGHTS_DIR / "nisqa_mos_only.npz")')" \
             --deg /tmp/smoke_sine.wav
+      - name: Artifact verifier (installed wheel)
+        run: |
+          /tmp/cleanroom_whl/bin/python "$GITHUB_WORKSPACE/scripts/verify_artifacts.py" --strict

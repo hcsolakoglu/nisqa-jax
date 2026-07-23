@@ -48,7 +48,7 @@ Parity is ~1000× tighter than required. Segment extraction is exact-equal. Re-c
 **JAX wins all 60 benchmark cases.** Adversarial input distributions (zeros, large, uniform, mixed-length) do not change the speedup ratio. bf16 extends JAX's lead to 5.8×–6.5× vs PyTorch fp16 autocast.
 
 ### Edge-Case Robustness
-All 62 correctness probes pass (n_wins=0/1, mixed batch, padding invariance exact, NaN propagates, zero/large inputs finite, full-1300 works, bf16 finite, deterministic, config rejection, feature parity, CLI modes, transfer_guard clean).
+All correctness probes pass (n_wins=0/1, mixed batch, padding invariance exact, NaN propagates, zero/large inputs finite, full-1300 works, bf16 finite, deterministic, config rejection, feature parity, CLI modes, transfer_guard clean). The current CI suite is 107 tests (see `pytest --collect-only`); the original adversarial probe count is preserved here as historical provenance.
 
 ## Artifacts
 
@@ -77,8 +77,10 @@ uv pip install "jax[cuda12_pip]==0.4.30" "jaxlib==0.4.30" "numpy==1.26.4" "scipy
   "librosa==0.10.2.post1" "pandas==2.1.4" "soundfile==0.12.1" "pytest>=8" "tqdm" "matplotlib"
 uv pip install "torch==2.11.0+cu128" --index-url https://download.pytorch.org/whl/cu128
 
-# Run probes (from repo root)
-cd "/media/mithex/NVME 2/Codex Linux/NISQA PORT PROJECT"
+# Run probes (from repo root — probes auto-resolve the repo root from their
+# own location; set NISQA_PT_ROOT to point at the PyTorch reference checkout
+# for parity/benchmark probes that need torch).
+cd /path/to/nisqa-jax
 python adversarial_review/probes/nisqa_probe.py        # CPU edge cases
 python adversarial_review/probes/nisqa_probe2.py        # CPU hidden requirements
 python adversarial_review/probes/nisqa_probe_gpu.py     # GPU correctness
@@ -88,4 +90,4 @@ python adversarial_review/probes/nisqa_bench.py         # JAX vs PyTorch GPU ben
 
 ## Verdict
 
-Port A is **correct and production-quality** for the 3 shipped checkpoints, with parity ~1e-7 (1000× tighter than required) and GPU speedup of 1.5×–7.2× over PyTorch. The adversarial review surfaced 10 issues — 2 medium (CSV compatibility, broken persistent cache), 1 latent correctness gap (nhead>1), and 7 low-severity UX/perf/consistency items. None affect numerical correctness of the shipped models. See `ISSUES_AND_ROADMAP.md` for the full improvement plan.
+Port A is **numerically correct** for the 3 shipped checkpoints, with parity ~1e-7 (1000× tighter than required) and GPU speedup of 1.5×–7.2× over PyTorch. The adversarial review surfaced 10 issues — 2 medium (CSV compatibility, broken persistent cache), 1 latent correctness gap (nhead>1), and 7 low-severity UX/perf/consistency items. None affect numerical correctness of the shipped models. "Production-quality" is a deployment decision that depends on your hardware (TPU is code-audited only — see README), load, and the CC BY-NC-SA 4.0 weight license; this review establishes numerical correctness, not production readiness. See `ISSUES_AND_ROADMAP.md` for the full improvement plan.

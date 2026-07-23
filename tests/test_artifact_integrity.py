@@ -19,7 +19,7 @@ import numpy as np
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-WEIGHTS_ROOT = Path(os.environ.get("NISQA_JAX_WEIGHTS_DIR", ROOT / "weights"))
+WEIGHTS_ROOT = Path(os.environ.get("NISQA_JAX_WEIGHTS_DIR", ROOT / "nisqa_jax" / "weights"))
 MOS_ONLY_NPZ = WEIGHTS_ROOT / "nisqa_mos_only.npz"
 MOS_ONLY_JSON = WEIGHTS_ROOT / "nisqa_mos_only.json"
 
@@ -229,3 +229,107 @@ def test_missing_shape_manifest_rejected(tmp_path: Path) -> None:
     _save_metadata(js, meta)
     with pytest.raises(ValueError, match="missing a 'shape_manifest'"):
         load_converted_checkpoint(npz)
+
+
+# ---------------------------------------------------------------------------
+# Release verifier (scripts/verify_artifacts.py): strict mode + metadata gate
+# ---------------------------------------------------------------------------
+
+def _run_verifier(weights_dir: Path, *extra: str) -> tuple[int, str, str]:
+    import subprocess
+
+    proc = subprocess.run(
+        [sys.executable, str(ROOT / "scripts" / "verify_artifacts.py"), "--weights-dir", str(weights_dir), *extra],
+        capture_output=True, text=True, timeout=120,
+    )
+    return proc.returncode, proc.stdout, proc.stderr
+
+
+def _copy_weights_to_tmp(tmp_path: Path, *, with_checksums: bool = True) -> Path:
+    """Copy shipped NPZ + JSON + LICENSE (+ CHECKSUMS) into a temp weights dir."""
+    _skip_if_weights_missing()
+    wdir = tmp_path / "weights"
+    wdir.mkdir()
+    for p in WEIGHTS_ROOT.glob("*.npz"):
+        shutil.copy2(p, wdir / p.name)
+    for p in WEIGHTS_ROOT.glob("*.json"):
+        shutil.copy2(p, wdir / p.name)
+    shutil.copy2(WEIGHTS_ROOT / "LICENSE_model_weights", wdir / "LICENSE_model_weights")
+    if with_checksums:
+        shutil.copy2(WEIGHTS_ROOT / "CHECKSUMS.sha256", wdir / "CHECKSUMS.sha256")
+    return wdir
+
+
+def test_verifier_passes_on_shipped_artifacts() -> None:
+    """The release verifier must pass cleanly on the shipped in-package artifacts."""
+    from nisqa_jax.weights import WEIGHTS_DIR
+
+    if not (WEIGHTS_DIR / "CHECKSUMS.sha256").exists():
+        pytest.skip("shipped weights unavailable")
+    rc, out, err = _run_verifier(WEIGHTS_DIR)
+    assert rc == 0, f"verifier failed on shipped artifacts:\nstdout={out}\nstderr={err}"
+    assert "metadata=valid" in out
+
+
+def test_verifier_strict_fails_on_unknown_npz(tmp_path: Path) -> None:
+    """Strict mode must fail when an npz on disk is not in CHECKSUMS.sha256."""
+    wdir = _copy_weights_to_tmp(tmp_path)
+    # Add an unlisted unknown npz -> strict must fail.
+    shutil.copy2(WEIGHTS_ROOT / "nisqa_mos_only.npz", wdir / "_unknown.npz")
+    rc, out, err = _run_verifier(wdir)
+    assert rc != 0
+    assert "_unknown.npz" in err
+
+
+def test_verifier_strict_fails_on_unknown_json(tmp_path: Path) -> None:
+    """Strict mode must fail when a JSON sidecar on disk is not in CHECKSUMS.sha256."""
+    wdir = _copy_weights_to_tmp(tmp_path)
+    # Add an unlisted unknown json -> strict must fail.
+    (wdir / "_unknown.json").write_text('{"test": 1}')
+    rc, out, err = _run_verifier(wdir)
+    assert rc != 0
+    assert "_unknown.json" in err
+
+
+def test_verifier_checksums_includes_json_entries() -> None:
+    """CHECKSUMS.sha256 must list SHA-256 for both NPZ and JSON files."""
+    _skip_if_weights_missing()
+    sums = (WEIGHTS_ROOT / "CHECKSUMS.sha256").read_text()
+    npz_names = {p.name for p in WEIGHTS_ROOT.glob("*.npz")}
+    json_names = {p.name for p in WEIGHTS_ROOT.glob("*.json")}
+    listed = {line.split("  ", 1)[1].strip() for line in sums.splitlines() if line.strip() and not line.startswith("#")}
+    assert npz_names <= listed, f"NPZ files missing from CHECKSUMS: {npz_names - listed}"
+    assert json_names <= listed, f"JSON files missing from CHECKSUMS: {json_names - listed}"
+
+
+def test_verifier_metadata_gate_catches_missing_field(tmp_path: Path) -> None:
+    """The metadata gate must fail when a required JSON field is missing."""
+    wdir = _copy_weights_to_tmp(tmp_path)
+    # Remove a required field from one metadata sidecar (this also changes the
+    # JSON checksum, so the checksum gate catches it too; the metadata gate
+    # surfaces the specific missing-field diagnostic).
+    js = wdir / "nisqa_mos_only.json"
+    meta = _load_metadata(js)
+    del meta["npz_sha256"]
+    _save_metadata(js, meta)
+    rc, out, err = _run_verifier(wdir)
+    assert rc != 0
+    assert "FAIL" in out
+    assert "npz_sha256" in out
+
+
+def test_verifier_update_checksums_roundtrip(tmp_path: Path) -> None:
+    """--update-checksums rewrites CHECKSUMS.sha256 (NPZ + JSON) and then passes."""
+    wdir = _copy_weights_to_tmp(tmp_path, with_checksums=False)
+    # No CHECKSUMS file yet -> update must create it and then verify clean.
+    rc, out, err = _run_verifier(wdir, "--update-checksums")
+    assert rc == 0, f"update+verify failed:\nstdout={out}\nstderr={err}"
+    assert (wdir / "CHECKSUMS.sha256").exists()
+    assert "updated" in out
+    # The rewritten CHECKSUMS must list both NPZ and JSON files.
+    sums = (wdir / "CHECKSUMS.sha256").read_text()
+    listed = {line.split("  ", 1)[1].strip() for line in sums.splitlines() if line.strip() and not line.startswith("#")}
+    npz_names = {p.name for p in wdir.glob("*.npz")}
+    json_names = {p.name for p in wdir.glob("*.json")}
+    assert npz_names <= listed, f"NPZ missing from rewritten CHECKSUMS: {npz_names - listed}"
+    assert json_names <= listed, f"JSON missing from rewritten CHECKSUMS: {json_names - listed}"

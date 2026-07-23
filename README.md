@@ -14,7 +14,7 @@ Standalone [JAX](https://github.com/google/jax) inference port for the three shi
 | `nisqa.npz` | adapt-CNN + self-attention + att-pool | `mos, noi, dis, col, loud` | `nisqa.tar` (NISQA_DIM) |
 | `nisqa_tts.npz` | standard-CNN + BiLSTM + last-step-bi | `naturalness` | `nisqa_tts.tar` |
 
-Pre-converted `.npz` weights ship in `weights/` — zero-config inference after clone.
+Pre-converted `.npz` weights ship inside the `nisqa_jax/weights/` package data — zero-config inference after install (no repo checkout needed).
 
 ## Benchmark (JAX-GPU vs PyTorch-GPU, RTX 3070)
 
@@ -140,9 +140,26 @@ CI).
 
 | Backend | Status | Evidence |
 |---|---|---|
-| **CPU** | Tested | Full 62-test suite passes on `jax 0.4.30` CPU (`JAX_PLATFORMS=cpu`); persistent compilation cache verified on CPU. |
-| **CUDA** | Tested | Full 62-test suite passes on `jax 0.4.30` CUDA, RTX 3070 (`JAX_PLATFORMS=cuda`); CPU-vs-CUDA parity measured (max abs diff ≤ 2.7e-6 across all 3 models); persistent cache verified on CUDA. |
+| **CPU** | Tested | Full 107-test suite passes on `jax 0.4.30` and `jax 0.4.38` CPU (`JAX_PLATFORMS=cpu`) across Python 3.10/3.11/3.12; persistent compilation cache verified on CPU. |
+| **CUDA** | Tested (developer machine, not CI) | Full test suite passes on `jax 0.4.30` CUDA, RTX 3070 (`JAX_PLATFORMS=cuda`); CPU-vs-CUDA parity measured (max abs diff ≤ 2.7e-6 across all 3 models); persistent cache verified on CUDA. CI runs CPU-only (no GPU runner); CUDA is re-validated manually before each release. |
 | **TPU** | Code-audited, expected-supported | No TPU hardware in CI. Portability established by code audit + JAX docs: all matmuls/convs/einsums run under `jax.default_matmul_precision("float32")` (f32 accumulation on TPU per JAX docs), every reduction (LayerNorm mean/var, attention + pooling softmax/einsum) casts to f32, NHWC/HWIO conv layout is TPU-optimal, int32 indices throughout (no int64 downcast), and bf16 compute is native on TPU. Not "tested" — run the suite on TPU hardware before production deployment. |
+
+### Supported matrix (truthful)
+
+| Axis | Supported range | CI-gated |
+|---|---|---|
+| Python | 3.10, 3.11, 3.12 (`requires-python>=3.10`) | Yes (all three) |
+| JAX / jaxlib | `>=0.4.30,<0.5` | Yes (lower `0.4.30` + upper `0.4.38`) |
+| Precision | `float32` (default, strict parity), `bf16` (compute, f32 reductions) | Yes (CPU) |
+| Architectures | the 3 shipped checkpoints only (see table above) | Yes |
+
+Unsupported (rejected at the config boundary with a clear error): `NISQA_DE` (double-ended), multi-head self-attention (`td_sa_nhead>1`), and any architecture combo outside the 3 shipped checkpoints. See `nisqa_jax/config.py`.
+
+### Security trust boundary
+
+- **Bundled weight artifacts** (`nisqa_jax/weights/*.npz` + `.json`) are verified on every load and in CI: SHA-256 checksum (`CHECKSUMS.sha256`), embedded `npz_sha256`, and `shape_manifest` (tensor keys/shapes/dtypes). The verifier runs in strict mode in CI — an unknown/unlisted artifact fails the gate. Treat the shipped artifacts as trusted data; do not load `.npz`/`.json` from untrusted sources without re-running conversion from a trusted `.tar`.
+- **Persistent compilation cache** (`cache_dir`) is treated as **trusted executable code** by JAX: a tampered cache entry can execute arbitrary code on cache hit. The cache directory must be writable only by a trusted user (never a shared/world-writable location).
+- **Source `.tar` checkpoints** (optional `convert`/`parity` extras) are loaded via PyTorch `torch.load`; only convert checkpoints from a trusted source. Inference from the shipped `.npz` artifacts does not require PyTorch or touch `.tar` files.
 
 ### Device selection
 
@@ -200,11 +217,13 @@ persistent cache is supported by JAX (code-audited; not CI-tested here).
 ## Predict
 
 A `nisqa-jax` console script is installed alongside the package (equivalent to
-`python -m nisqa_jax.predict`):
+`python -m nisqa_jax.predict`). The `--pretrained_model` path may be either a
+relative path to the in-package weights (`nisqa_jax/weights/<name>.npz`) or an
+absolute path to any converted `.npz`:
 
 ```bash
 nisqa-jax --mode predict_file \
-  --pretrained_model weights/nisqa_mos_only.npz \
+  --pretrained_model nisqa_jax/weights/nisqa_mos_only.npz \
   --deg sample.wav --precision float32
 ```
 
@@ -212,7 +231,7 @@ Single file:
 ```bash
 python -m nisqa_jax.predict \
   --mode predict_file \
-  --pretrained_model weights/nisqa_mos_only.npz \
+  --pretrained_model nisqa_jax/weights/nisqa_mos_only.npz \
   --deg sample.wav \
   --precision float32
 ```
@@ -221,7 +240,7 @@ Batch directory:
 ```bash
 python -m nisqa_jax.predict \
   --mode predict_dir \
-  --pretrained_model weights/nisqa.npz \
+  --pretrained_model nisqa_jax/weights/nisqa.npz \
   --data_dir wavs \
   --bs 8 \
   --preprocess_workers 4 \
@@ -232,11 +251,11 @@ Robust batch options:
 ```bash
 # Skip corrupt/too-short files instead of aborting the whole batch; an `error`
 # column is added (NaN for good rows, message for bad ones).
-python -m nisqa_jax.predict --mode predict_dir --pretrained_model weights/nisqa.npz \
+python -m nisqa_jax.predict --mode predict_dir --pretrained_model nisqa_jax/weights/nisqa.npz \
   --data_dir wavs --bs 8 --on_error collect
 
 # On GPU out-of-memory, halve --bs and retry down to 1 (logs each reduction).
-python -m nisqa_jax.predict --mode predict_dir --pretrained_model weights/nisqa.npz \
+python -m nisqa_jax.predict --mode predict_dir --pretrained_model nisqa_jax/weights/nisqa.npz \
   --data_dir wavs --bs 16 --auto_batch
 ```
 
@@ -244,7 +263,7 @@ Python API:
 ```python
 from nisqa_jax import load_model, predict_file
 
-model = load_model("weights/nisqa_mos_only.npz", device="gpu", precision="bf16")
+model = load_model("nisqa_jax/weights/nisqa_mos_only.npz", device="gpu", precision="bf16")
 scores = predict_file(model, "sample.wav")
 # {'mos': 1.324}
 ```
@@ -255,7 +274,7 @@ Pass `cache_dir` to `load_model` to persist XLA compilations across processes so
 the first inference of a given input shape pays the compile cost only once, ever:
 
 ```python
-model = load_model("weights/nisqa_mos_only.npz", device="gpu", cache_dir="weights")
+model = load_model("nisqa_jax/weights/nisqa_mos_only.npz", device="gpu", cache_dir="xla_cache")
 ```
 
 JAX's default 1-second minimum compile-time threshold would silently skip this
@@ -275,17 +294,17 @@ hot before real traffic:
 from nisqa_jax import load_model, prewarm
 from nisqa_jax.predict import default_length_bucket
 
-model = load_model("weights/nisqa_mos_only.npz", device="gpu", cache_dir="weights")
+model = load_model("nisqa_jax/weights/nisqa_mos_only.npz", device="gpu", cache_dir="xla_cache")
 prewarm(model, batch_sizes=[8], bucket_lengths=[default_length_bucket(model.config)],
-        cache_dir="weights")
+        cache_dir="xla_cache")
 ```
 
 CLI: pass `--prewarm` to pre-compile the model's default bucket grid at `--bs`
 before the first real batch:
 
 ```bash
-python -m nisqa_jax.predict --mode predict_dir --pretrained_model weights/nisqa_mos_only.npz \
-  --data_dir wavs --bs 8 --cache_dir weights --prewarm
+python -m nisqa_jax.predict --mode predict_dir --pretrained_model nisqa_jax/weights/nisqa_mos_only.npz \
+  --data_dir wavs --bs 8 --cache_dir xla_cache --prewarm
 ```
 
 ## Convert Original Checkpoints
@@ -295,54 +314,71 @@ Conversion is deterministic and produces an `.npz` artifact plus JSON metadata (
 ```python
 from nisqa_jax.checkpoint import convert_checkpoint
 
-convert_checkpoint("path/to/nisqa_mos_only.tar", cache_dir="weights")
+convert_checkpoint("path/to/nisqa_mos_only.tar", cache_dir="xla_cache")
 ```
 
 ## Validate
 
 ```bash
-pytest -q                    # core JAX tests (standalone, no PyTorch needed)
-pytest -q -m parity          # PyTorch reference parity tests (requires torch)
+pytest -q                    # self-contained CI suite (no PyTorch needed)
+pytest -q tests/test_golden_parity.py  # golden-vector parity gate only
+pytest -q -m parity          # live PyTorch parity tests (requires torch +
+                             #   source .tar checkpoints + PyTorch reference
+                             #   source repo; skips cleanly without them)
 ```
+
+The CI pipeline runs the self-contained suite + golden parity gate only.
+Live PyTorch parity tests are optional (they require the source `.tar`
+checkpoints and the PyTorch reference source repo, which are not in this
+repo); they skip cleanly when those are absent. The golden parity gate
+(`tests/test_golden_parity.py`) is the CI correctness proof — it replays
+deterministic golden vectors (generated from the trusted converted artifacts
+and validated against PyTorch at generation time) with a strict 5e-5
+tolerance, no torch install required.
 
 ## Development
 
-The CI gates (`.github/workflows/ci.yml`) can all be run locally:
+The CI gates (`.github/workflows/ci.yml`) can all be run locally. Tool versions
+are pinned in CI (ruff 0.6.9, mypy 1.11.2, build 1.2.2.post1); match them
+locally for reproducible results:
 
 ```bash
-pip install ruff mypy build pytest
+pip install "ruff==0.6.9" "mypy==1.11.2" "build==1.2.2.post1" pytest
 
 ruff check .                 # lint (config in [tool.ruff] in pyproject.toml)
 mypy nisqa_jax/              # lenient typecheck (excludes tests/bench/probes)
 pytest -q                    # test suite (torch-dependent tests auto-skip)
-python scripts/verify_artifacts.py   # weight checksum + manifest verification
+python scripts/verify_artifacts.py   # weight checksum + manifest + metadata verification
 python -m build              # build sdist + wheel
+pytest -q tests/test_build_contents.py  # wheel + sdist carry required files
 ```
 
-The bundled weight artifacts are verified against `weights/CHECKSUMS.sha256`
-(SHA-256 of each `.npz`) and each `.json` sidecar's `shape_manifest` on every CI
-run.
+The bundled weight artifacts are verified against
+`nisqa_jax/weights/CHECKSUMS.sha256` (SHA-256 of each `.npz`), each `.json`
+sidecar's `shape_manifest` (tensor keys/shapes/dtypes), and the metadata gate
+(required fields + `npz_sha256` cross-check + no absolute-path leak) on every
+CI run, in strict mode (unknown/unlisted artifacts fail the gate).
 
 ## Benchmark
 
 Model-only (JAX only):
 ```bash
 python -m nisqa_jax.bench_compare \
-  --pretrained_model weights/nisqa_mos_only.npz \
+  --pretrained_model nisqa_jax/weights/nisqa_mos_only.npz \
   --device gpu --precision bf16 --batch_size 8 --seq_len 128 --no_torch
 ```
 
 JAX vs PyTorch head-to-head (requires CUDA PyTorch):
 ```bash
 python -m nisqa_jax.bench_compare \
-  --pretrained_model weights/nisqa_mos_only.npz \
+  --pretrained_model nisqa_jax/weights/nisqa_mos_only.npz \
   --device gpu --batch_size 8 --seq_len 128 --steps 100
 ```
 
 End-to-end with preprocessing:
 ```bash
 python -m nisqa_jax.bench \
-  --pretrained_model weights/nisqa_mos_only.npz \
+  --pretrained_model nisqa_jax/weights/nisqa_mos_only.npz \
   --device gpu --precision bf16 --batch_size 8 \
   --data_dir wavs --preprocess_workers 4
 ```
@@ -361,7 +397,8 @@ nisqa_jax/
 ├── features.py      — librosa mel-spectrogram + segmentation (matches PyTorch exactly)
 ├── predict.py       — CLI + batch prediction API
 ├── bench.py         — end-to-end benchmark
-└── bench_compare.py — JAX vs PyTorch head-to-head benchmark
+├── bench_compare.py — JAX vs PyTorch head-to-head benchmark
+└── weights/         — bundled .npz artifacts + .json metadata + CHECKSUMS.sha256 (package data)
 ```
 
 Key porting decisions:
@@ -374,9 +411,9 @@ Key porting decisions:
 ## License
 
 - **Source code:** MIT (see [LICENSE](LICENSE))
-- **Model weights:** the bundled NISQA weights in `weights/` are derived from the
+- **Model weights:** the bundled NISQA weights in `nisqa_jax/weights/` are derived from the
   original TU Berlin checkpoints and are licensed **CC BY-NC-SA 4.0 (non-commercial)**
-  — see [weights/LICENSE_model_weights](weights/LICENSE_model_weights) for the full
+  — see [nisqa_jax/weights/LICENSE_model_weights](nisqa_jax/weights/LICENSE_model_weights) for the full
   text. **Commercial deployment requires resolving the model-weight license
   separately**; the MIT license above covers this port's source code only.
 - **Academic use:** please cite the original NISQA paper (see [CITATION.cff](CITATION.cff))

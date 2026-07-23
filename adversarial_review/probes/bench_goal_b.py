@@ -24,9 +24,11 @@ os.environ.setdefault("XLA_PYTHON_CLIENT_MEM_FRACTION", "0.55")
 
 import numpy as np
 
-ROOT = Path(__file__).resolve().parent
+# Repo root: 3 levels up from adversarial_review/probes/<this>. Override with
+# NISQA_JAX_ROOT for non-standard layouts.
+ROOT = Path(os.environ.get("NISQA_JAX_ROOT", Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / "nisqa pytorch"))
+sys.path.insert(0, str(Path(os.environ.get("NISQA_PT_ROOT", ROOT / "nisqa_pytorch"))))
 
 import jax
 from nisqa_jax.checkpoint import load_model
@@ -48,7 +50,7 @@ def _model_args(args):
 
 
 def build_pt_model(device):
-    ck = torch.load(ROOT / "nisqa pytorch" / "weights" / "nisqa_tts.tar", map_location="cpu")
+    ck = torch.load(Path(os.environ.get("NISQA_PT_ROOT", ROOT / "nisqa_pytorch")) / "weights" / "nisqa_tts.tar", map_location="cpu")
     args = ck["args"]
     cls = {"NISQA": nl.NISQA, "NISQA_DIM": nl.NISQA_DIM}[args["model"]]
     m = cls(**_model_args(args))
@@ -105,7 +107,7 @@ def main():
     torch.backends.cudnn.allow_tf32 = False
     device = torch.device("cuda")
 
-    jax_model = load_model(ROOT / "weights" / "nisqa_tts.npz", device="gpu",
+    jax_model = load_model(ROOT / "nisqa_jax" / "weights" / "nisqa_tts.npz", device="gpu",
                            cache_dir=ROOT / ".jax_cache")
     feat = jax_model.config.feature
     pt_eager, _ = build_pt_model(device)

@@ -234,6 +234,7 @@ def _lstm(sd: dict[str, Any]) -> dict[str, Any]:
 
 
 def _pool_att(sd: dict[str, Any], prefix: str) -> dict[str, dict[str, np.ndarray]]:
+    # Each entry is a _linear() sub-dict {"w": ..., "b": ...}, not a bare array.
     return {
         "linear1": _linear(sd, f"{prefix}.model.linear1"),
         "linear2": _linear(sd, f"{prefix}.model.linear2"),
@@ -372,7 +373,10 @@ def convert_checkpoint(
         stem = f"{cfg.cache_key}.v{CONVERSION_VERSION}"
         flat = _flatten(params)
         npz_path = cache / f"{stem}.npz"
-        np.savez(npz_path, **flat)
+        # numpy's `savez` stubs do not model `**dict[str, ndarray]` unpacking and
+        # mis-resolve the kwargs against an unrelated overload (arg-type on a
+        # `bool` param); the runtime call is correct. Justified narrow ignore.
+        np.savez(npz_path, **flat)  # type: ignore[arg-type]
         metadata = {
             "conversion_version": CONVERSION_VERSION,
             "source_path": path.name,

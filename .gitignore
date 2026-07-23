@@ -44,4 +44,5 @@ Thumbs.db
 # Results / outputs
 NISQA_results.csv
 *.npz
-!weights/*.npz
+!nisqa_jax/weights/*.npz
+!tests/golden/*.npz

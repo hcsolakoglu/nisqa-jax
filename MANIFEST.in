@@ -1,0 +1,37 @@
+# sdist contents — ensure source distributions carry everything needed to
+# reproduce the build, run the test suite (self-contained, no external
+# checkout), and verify artifacts. Wheel data (.npz/.json) is handled by
+# [tool.setuptools.package-data] in pyproject.toml; this file governs the
+# sdist tarball only.
+
+# License + metadata
+include LICENSE
+include CITATION.cff
+include README.md
+include pyproject.toml
+include requirements-jax.txt
+include JAX_INFERENCE_PORT_SPEC.md
+
+# CI + docs
+recursive-include .github *.yml
+
+# Release tooling + artifact verifier
+recursive-include scripts *.py
+
+# Tests + shared utils + golden parity fixtures (self-contained CI gate)
+recursive-include tests *.py *.json *.npz *.wav
+
+# Bundled weight artifacts (in-package data; also included as package-data
+# in the wheel, but the sdist must carry them for editable/source installs).
+recursive-include nisqa_jax/weights *.npz *.json LICENSE_model_weights CHECKSUMS.sha256
+
+# Adversarial review docs + probe scripts (provenance; not imported at runtime)
+recursive-include adversarial_review *.md *.py *.json *.txt
+
+# Exclude build artifacts / caches from the sdist.
+global-exclude __pycache__
+global-exclude *.py[cod]
+global-exclude .pytest_cache
+global-exclude .mypy_cache
+global-exclude .ruff_cache
+global-exclude *.egg-info
