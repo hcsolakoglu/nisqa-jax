@@ -31,7 +31,7 @@ dependencies = [
   # 0.4.30); this repo uses the version-tolerant `jax_compilation_cache_dir`
   # knob, but staying within 0.4.x avoids surprise breakage of the persistent
   # cache and JIT behavior. Bump only after re-running the full parity suite.
-  "jax>=0.4.30,<0.5",
+  "jax>=0.4.30,<0.7",
   "numpy>=1.26,<2",
   "scipy>=1.11",
   "librosa>=0.10.2",
