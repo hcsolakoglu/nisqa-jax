@@ -10,6 +10,7 @@ include CITATION.cff
 include README.md
 include pyproject.toml
 include requirements-jax.txt
+include requirements-gpu.txt
 include JAX_INFERENCE_PORT_SPEC.md
 
 # CI + docs

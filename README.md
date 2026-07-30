@@ -105,18 +105,34 @@ automatically (see below).
 
 ## Install
 
-**CPU** (validation, development, CPU inference):
+Use a fresh virtual environment for each backend. Installing the CPU and CUDA
+requirements into the same environment can leave the CPU-only `jaxlib` wheel
+selected.
+
+**CPU** (tested runtime pins):
 ```bash
-pip install -e .
-# or pin the exact tested versions:
-pip install -r requirements-jax.txt
+python -m venv .venv-cpu
+. .venv-cpu/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements-jax.txt
+python -m pip install -e . --no-deps
+python -c 'import jax; print(jax.devices()); assert all(d.platform == "cpu" for d in jax.devices())'
 ```
 
-**NVIDIA GPU** (CUDA 12) — install the CUDA JAX meta-package instead of plain `jax`:
+**NVIDIA GPU** (tested CUDA 12 runtime pins):
 ```bash
-pip install -e .
-pip install "jax[cuda12_pip]==0.4.30"  # see https://docs.jax.dev/en/latest/installation.html
+python -m venv .venv-gpu
+. .venv-gpu/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements-gpu.txt
+python -m pip install -e . --no-deps
+python -c 'import jax; print(jax.devices()); assert any(d.platform == "gpu" for d in jax.devices())'
 ```
+
+The CUDA wheels require a compatible NVIDIA driver; JAX's
+[installation guide](https://docs.jax.dev/en/latest/installation.html) is the
+source of truth for driver and platform constraints. The device assertion above
+must pass before using `--device gpu` or recording GPU benchmark results.
 
 > **JAX version pin.** `jax` is pinned to the tested `0.4.x` minor (`jax>=0.4.30,<0.5`).
 > JAX's compilation-cache config API churns across minors (e.g.
@@ -124,11 +140,17 @@ pip install "jax[cuda12_pip]==0.4.30"  # see https://docs.jax.dev/en/latest/inst
 > the version-tolerant `jax_compilation_cache_dir` knob, but staying within 0.4.x
 > avoids surprise breakage of the persistent compilation cache and JIT behavior.
 > Bump only after re-running the full parity suite. A full lockfile is intentionally
-> out of scope; `requirements-jax.txt` records the tested CPU versions.
+> out of scope; `requirements-jax.txt` and `requirements-gpu.txt` record the
+> tested direct CPU and CUDA 12 dependency versions. Transitive packages,
+> including NVIDIA CUDA runtimes, remain resolver-managed; record the complete
+> resolved environment with any release benchmark.
 
-For checkpoint conversion or PyTorch parity tests (optional):
+For self-contained validation, checkpoint conversion, or live PyTorch parity
+(all optional), install the corresponding extra:
 ```bash
-pip install -e '.[convert]'
+python -m pip install -e '.[test]'     # pytest + self-contained/golden tests
+python -m pip install -e '.[convert]'
+python -m pip install -e '.[parity]'   # pytest + torch; source repo/files still required
 ```
 
 ## Backends: CPU / CUDA / TPU
@@ -203,11 +225,10 @@ persistent cache is supported by JAX (code-audited; not CI-tested here).
 
 ### Caveats
 
-- The benchmark scripts (`bench_compare.py`, `bench.py`,
-  `adversarial_review/probes/bench_batching.py`, `adversarial_review/`) compare
-  against CUDA PyTorch and use `torch.cuda` — they are **CUDA-only** and require
-  a CUDA PyTorch install. The core inference and test suite have no such
-  dependency.
+- `bench_compare.py` can compare against CUDA PyTorch and therefore requires a
+  CUDA PyTorch install plus an explicit, hash-matched source checkpoint.
+  `bench.py` is JAX-only and can measure CPU or GPU end-to-end inference. The
+  core inference and self-contained test suite have no PyTorch dependency.
 - `--auto_batch` OOM recovery matches `ResourceExhaustedError` and the
   `RESOURCE_EXHAUSTED` / `out of memory` tokens in the error message, which
   covers GPU and TPU OOM surfaces; CPU does not raise OOM (it over-commits), so
@@ -279,8 +300,8 @@ scores = predict_file(model, "sample.wav")
 
 ## Persistent Compilation Cache
 
-Pass `cache_dir` to `load_model` to persist XLA compilations across processes so
-the first inference of a given input shape pays the compile cost only once, ever:
+Pass `cache_dir` to `load_model` to persist XLA compilations so compatible later
+processes can reuse a compiled executable for the same input shape:
 
 ```python
 from nisqa_jax import load_model
@@ -291,7 +312,10 @@ model = load_model(WEIGHTS_DIR / "nisqa_mos_only.npz", device="gpu", cache_dir="
 
 JAX's default 1-second minimum compile-time threshold would silently skip this
 model's sub-second compiles, so `load_model` lowers it to 0 when `cache_dir` is
-set. The cache directory is treated as trusted executable code by JAX: it must
+set. The cache location is process-global: reuse the same `cache_dir` for every
+model in one process; a conflicting later directory is rejected because JAX
+0.4.x may keep writing to its first internal cache. The cache directory is
+treated as trusted executable code by JAX: it must
 be writable only by a trusted user (never a shared/world-writable location), as
 a tampered cache entry can execute arbitrary code on cache hit.
 
@@ -331,12 +355,25 @@ from nisqa_jax.checkpoint import convert_checkpoint
 convert_checkpoint("path/to/nisqa_mos_only.tar", cache_dir="xla_cache")
 ```
 
+The original `.tar` checkpoints and PyTorch reference source are not bundled.
+Acquire them from the
+[upstream NISQA repository](https://github.com/gabrielmittag/NISQA), keep each
+checkpoint under its original filename, and retain the upstream license and
+attribution. Conversion accepts only safe `weights_only=True` deserialization.
+The converted artifact records the source SHA-256; `bench_compare` requires an
+explicit original checkpoint whose bytes match that hash. The bundled converted
+weights remain CC BY-NC-SA 4.0 (non-commercial), independently of this port's
+MIT source-code license; see [License](#license).
+
 ## Validate
 
+Install `.[test]` for the first two commands or `.[parity]` for the live
+PyTorch comparison, as shown in [Install](#install).
+
 ```bash
-pytest -q                    # self-contained CI suite (no PyTorch needed)
-pytest -q tests/test_golden_parity.py  # golden-vector parity gate only
-pytest -q -m parity          # live PyTorch parity tests (requires torch +
+python -m pytest -q                    # self-contained CI suite (no PyTorch needed)
+python -m pytest -q tests/test_golden_parity.py  # golden-vector parity gate only
+python -m pytest -q -m parity          # live PyTorch parity tests (requires torch +
                              #   source .tar checkpoints + PyTorch reference
                              #   source repo; skips cleanly without them)
 ```
@@ -383,13 +420,27 @@ python -m nisqa_jax.bench_compare \
   --device gpu --precision bf16 --batch_size 8 --seq_len 128 --no_torch
 ```
 
-JAX vs PyTorch head-to-head (requires CUDA PyTorch):
+The JSON separates host-to-device staging, the first forward (compilation or a
+persistent-cache lookup plus one execution), and warmed forward timing. Only
+the warmed forward is used for throughput and speedup.
+
+JAX vs PyTorch head-to-head (requires CUDA PyTorch, the original `.tar`, and an
+upstream source checkout):
 ```bash
 W="$(python -c 'from nisqa_jax.weights import WEIGHTS_DIR; print(WEIGHTS_DIR / "nisqa_mos_only.npz")')"
 python -m nisqa_jax.bench_compare \
   --pretrained_model "$W" \
-  --device gpu --batch_size 8 --seq_len 128 --steps 100
+  --torch_checkpoint /path/to/NISQA/weights/nisqa_mos_only.tar \
+  --torch_source_root /path/to/NISQA \
+  --device gpu --precision float32 --batch_size 8 --seq_len 128 --steps 100
 ```
+
+The tool never follows the conversion machine's recorded source path. It
+verifies `--torch_checkpoint` against the converted artifact's source SHA-256
+and fails with an actionable error when CUDA PyTorch, CUDA JAX, the upstream
+source tree, or matching float32 precision is unavailable. Reduced-precision
+JAX-only results are supported with `--no_torch`; bf16 is not compared to
+float32 PyTorch as if the timings were equivalent.
 
 End-to-end with preprocessing:
 ```bash
@@ -399,6 +450,10 @@ python -m nisqa_jax.bench \
   --device gpu --precision bf16 --batch_size 8 \
   --data_dir wavs --preprocess_workers 4
 ```
+
+End-to-end JSON separates input/output transfer and first-seen JIT-shape calls
+from repeated-shape warmed calls. Preprocessing workers are used even when all
+input files fit in one batch.
 
 ## Adversarial Review
 

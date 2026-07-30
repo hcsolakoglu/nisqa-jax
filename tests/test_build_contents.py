@@ -96,6 +96,7 @@ _REQUIRED_SDIST_FILES = [
     "pyproject.toml",
     "CITATION.cff",
     "requirements-jax.txt",
+    "requirements-gpu.txt",
 ]
 
 

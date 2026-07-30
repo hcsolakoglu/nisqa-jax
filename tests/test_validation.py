@@ -87,8 +87,7 @@ def test_config_accepts_single_head_attention() -> None:
 def test_config_accepts_missing_nhead() -> None:
     """LSTM checkpoints have td_sa_nhead=None and must still load."""
     _skip_if_weights_missing()
-    args = _base_args(nhead=1)
-    args["td_sa_nhead"] = None
+    args = _tts_args()
     cfg = config_from_checkpoint_args(args, Path("/fake/nisqa.tar"), "deadbeef")
     assert cfg.td_sa_nhead is None
 

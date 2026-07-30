@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
 import warnings
 from dataclasses import asdict
 from pathlib import Path
@@ -21,10 +22,13 @@ from .model import NisqaJaxModel, Precision, _validate_precision
 
 CONVERSION_VERSION = 4
 
-# Persistent compilation-cache configuration is applied at most once per process.
+# Persistent compilation-cache configuration is process-global. JAX 0.4.x keeps
+# an internal cache singleton after first use, so conflicting reconfiguration is
+# rejected instead of claiming a later directory has become active.
 # `is_initialized`/`initialize_cache` are deprecated in JAX 0.4.30 and removed in
 # newer releases; `jax_compilation_cache_dir` is the stable, version-tolerant knob.
-_persistent_cache_configured: bool = False
+_persistent_cache_path: Path | None = None
+_persistent_cache_lock = threading.Lock()
 
 
 def _configure_persistent_cache(cache_dir: str | Path) -> None:
@@ -34,19 +38,36 @@ def _configure_persistent_cache(cache_dir: str | Path) -> None:
     drops the sub-second compiles this repo produces, leaving the cache empty. We
     lower the threshold to 0 and disable the entry-size floor so every compiled
     program is persisted. Must run before the first compilation of the target
-    program (import order is irrelevant). Safe to call multiple times.
+    program (import order is irrelevant). Repeated use of the same path is
+    idempotent; a different explicit path is rejected because JAX may continue
+    writing to the first directory after its internal cache is initialized.
     """
-    global _persistent_cache_configured
-    if _persistent_cache_configured:
-        return
-    path = str(Path(cache_dir).expanduser().resolve())
-    Path(path).mkdir(parents=True, exist_ok=True)
-    jax.config.update("jax_compilation_cache_dir", path)
-    # Persist short (<1s) compiles instead of filtering them out.
-    jax.config.update("jax_persistent_cache_min_compile_time_secs", 0)
-    # No minimum entry size: cache every program regardless of size.
-    jax.config.update("jax_persistent_cache_min_entry_size_bytes", -1)
-    _persistent_cache_configured = True
+    global _persistent_cache_path
+    path = Path(cache_dir).expanduser().resolve()
+    with _persistent_cache_lock:
+        active_raw = getattr(jax.config, "jax_compilation_cache_dir", None)
+        active = Path(active_raw).expanduser().resolve() if active_raw else _persistent_cache_path
+        if active is not None:
+            # The directory may have been supplied externally (for example via
+            # JAX_COMPILATION_CACHE_DIR), so still apply this project's policy
+            # for short/small compilations instead of assuming it was set.
+            jax.config.update("jax_persistent_cache_min_compile_time_secs", 0)
+            jax.config.update("jax_persistent_cache_min_entry_size_bytes", -1)
+            if active != path:
+                raise ValueError(
+                    "JAX persistent compilation cache is process-global and is already "
+                    f"configured for {active}; refusing conflicting directory {path}. "
+                    "Reuse the first cache directory or start a new process."
+                )
+            _persistent_cache_path = path
+            return
+        path.mkdir(parents=True, exist_ok=True)
+        jax.config.update("jax_compilation_cache_dir", str(path))
+        # Persist short (<1s) compiles instead of filtering them out.
+        jax.config.update("jax_persistent_cache_min_compile_time_secs", 0)
+        # No minimum entry size: cache every program regardless of size.
+        jax.config.update("jax_persistent_cache_min_entry_size_bytes", -1)
+        _persistent_cache_path = path
 
 
 def _sha256(path: Path) -> str:
@@ -304,6 +325,172 @@ def _shape_manifest(params: dict[str, Any]) -> dict[str, list[int]]:
     return {name: list(value.shape) for name, value in sorted(_flatten(params).items())}
 
 
+def _expected_artifact_manifest(cfg: ModelConfig) -> dict[str, list[int]]:
+    """Return the exact parameter contract implemented by the shipped kernels."""
+    shapes: dict[str, list[int]] = {}
+
+    def linear(prefix: str, in_features: int, out_features: int) -> None:
+        shapes[f"{prefix}/w"] = [in_features, out_features]
+        shapes[f"{prefix}/b"] = [out_features]
+
+    def conv(prefix: str, in_channels: int, out_channels: int) -> None:
+        shapes[f"{prefix}/w"] = [3, 3, in_channels, out_channels]
+        shapes[f"{prefix}/b"] = [out_channels]
+
+    channels = ((1, 16), (16, 32), (32, 64), (64, 64), (64, 64), (64, 64))
+    for index, (in_channels, out_channels) in enumerate(channels, start=1):
+        conv(f"cnn/conv{index}", in_channels, out_channels)
+
+    if cfg.cnn_model == "adapt":
+        linear("time_dependency/input", 384, 64)
+        shapes["time_dependency/norm1/scale"] = [64]
+        shapes["time_dependency/norm1/bias"] = [64]
+        for index in range(2):
+            prefix = f"time_dependency/layers/{index}"
+            linear(f"{prefix}/in_proj", 64, 192)
+            linear(f"{prefix}/out", 64, 64)
+            linear(f"{prefix}/linear1", 64, 64)
+            linear(f"{prefix}/linear2", 64, 64)
+            for norm in ("norm1", "norm2"):
+                shapes[f"{prefix}/{norm}/scale"] = [64]
+                shapes[f"{prefix}/{norm}/bias"] = [64]
+
+        pool_prefixes = [f"pool_layers/{index}" for index in range(5)] if cfg.is_dimensional else ["pool"]
+        for prefix in pool_prefixes:
+            linear(f"{prefix}/linear1", 64, 128)
+            linear(f"{prefix}/linear2", 128, 1)
+            linear(f"{prefix}/linear3", 64, 1)
+    else:
+        linear("cnn/fc_out", 768, 20)
+        for direction in ("forward", "reverse"):
+            shapes[f"time_dependency/{direction}/w_ih"] = [20, 512]
+            shapes[f"time_dependency/{direction}/w_hh"] = [128, 512]
+            shapes[f"time_dependency/{direction}/b_ih"] = [512]
+            shapes[f"time_dependency/{direction}/b_hh"] = [512]
+        linear("pool/linear", 256, 1)
+    return dict(sorted(shapes.items()))
+
+
+def _expected_source_state_keys(cfg: ModelConfig) -> tuple[set[str], set[str]]:
+    """Return required source tensors and the only ignorable state entries."""
+    required: set[str] = set()
+    ignored: set[str] = set()
+    for index in range(1, 7):
+        required.update(
+            {
+                f"cnn.model.conv{index}.weight",
+                f"cnn.model.conv{index}.bias",
+                f"cnn.model.bn{index}.weight",
+                f"cnn.model.bn{index}.bias",
+                f"cnn.model.bn{index}.running_mean",
+                f"cnn.model.bn{index}.running_var",
+            }
+        )
+        ignored.add(f"cnn.model.bn{index}.num_batches_tracked")
+    if cfg.cnn_model == "standard":
+        required.update({"cnn.model.fc_out.weight", "cnn.model.fc_out.bias"})
+
+    if cfg.td == "self_att":
+        base = "time_dependency.model"
+        required.update(
+            {
+                f"{base}.linear.weight",
+                f"{base}.linear.bias",
+                f"{base}.norm1.weight",
+                f"{base}.norm1.bias",
+            }
+        )
+        for index in range(2):
+            prefix = f"{base}.layers.{index}"
+            required.update(
+                {
+                    f"{prefix}.self_attn.in_proj_weight",
+                    f"{prefix}.self_attn.in_proj_bias",
+                }
+            )
+            for layer_name in (
+                "self_attn.out_proj",
+                "linear1",
+                "linear2",
+                "norm1",
+                "norm2",
+            ):
+                required.update({f"{prefix}.{layer_name}.weight", f"{prefix}.{layer_name}.bias"})
+    else:
+        base = "time_dependency.model.lstm"
+        for suffix in ("", "_reverse"):
+            required.update(
+                {
+                    f"{base}.weight_ih_l0{suffix}",
+                    f"{base}.weight_hh_l0{suffix}",
+                    f"{base}.bias_ih_l0{suffix}",
+                    f"{base}.bias_hh_l0{suffix}",
+                }
+            )
+
+    if cfg.pool == "att":
+        prefixes = [f"pool_layers.{index}" for index in range(5)] if cfg.is_dimensional else ["pool"]
+        for prefix in prefixes:
+            for layer in ("linear1", "linear2", "linear3"):
+                required.update(
+                    {
+                        f"{prefix}.model.{layer}.weight",
+                        f"{prefix}.model.{layer}.bias",
+                    }
+                )
+    else:
+        required.update({"pool.model.linear.weight", "pool.model.linear.bias"})
+    return required, ignored
+
+
+def _validate_source_state_dict(sd: Any, cfg: ModelConfig) -> None:
+    if not hasattr(sd, "keys"):
+        raise ValueError("Checkpoint model_state_dict must be a mapping of tensor names to tensors")
+    required, ignored = _expected_source_state_keys(cfg)
+    actual = set(sd.keys())
+    if not all(isinstance(name, str) for name in actual):
+        raise ValueError("Checkpoint model_state_dict keys must all be strings")
+    missing = sorted(required - actual)
+    unexpected = sorted(actual - required - ignored)
+    if missing or unexpected:
+        details = []
+        if missing:
+            details.append(f"missing required keys: {missing}")
+        if unexpected:
+            details.append(f"unexpected keys: {unexpected}")
+        raise ValueError(
+            "Checkpoint state_dict does not match the validated shipped architecture "
+            f"({'; '.join(details)}). Only the six expected BatchNorm "
+            "num_batches_tracked entries may be ignored."
+        )
+
+
+def _validate_parameter_manifest(cfg: ModelConfig, manifest: dict[str, list[int]], *, context: str) -> None:
+    expected = _expected_artifact_manifest(cfg)
+    if manifest != expected:
+        missing = sorted(set(expected) - set(manifest))
+        extra = sorted(set(manifest) - set(expected))
+        wrong = sorted(
+            name
+            for name in set(expected).intersection(manifest)
+            if manifest[name] != expected[name]
+        )
+        details = []
+        if missing:
+            details.append(f"missing keys: {missing}")
+        if extra:
+            details.append(f"unexpected keys: {extra}")
+        if wrong:
+            details.append(
+                "wrong shapes: "
+                + repr({name: {"actual": manifest[name], "expected": expected[name]} for name in wrong})
+            )
+        raise ValueError(
+            f"{context} does not match the exact shipped JAX parameter contract "
+            f"({'; '.join(details)})."
+        )
+
+
 def _convert_state_dict(sd: dict[str, Any], cfg: ModelConfig) -> dict[str, Any]:
     params: dict[str, Any] = {"cnn": _cnn(sd, cfg)}
     if cfg.td == "self_att":
@@ -404,8 +591,17 @@ def convert_checkpoint(
     digest = _sha256(path)
     torch = _torch()
     checkpoint = _load_torch_checkpoint(torch, path)
+    if not isinstance(checkpoint, dict):
+        raise ValueError("Checkpoint root must be a dict containing 'args' and 'model_state_dict'")
+    if not isinstance(checkpoint.get("args"), dict):
+        raise ValueError("Checkpoint 'args' must be a dict")
+    if "model_state_dict" not in checkpoint:
+        raise ValueError("Checkpoint is missing required 'model_state_dict'")
     cfg = config_from_checkpoint_args(checkpoint["args"], path, digest)
-    params = _convert_state_dict(checkpoint["model_state_dict"], cfg)
+    state_dict = checkpoint["model_state_dict"]
+    _validate_source_state_dict(state_dict, cfg)
+    params = _convert_state_dict(state_dict, cfg)
+    _validate_parameter_manifest(cfg, _shape_manifest(params), context="Converted source checkpoint")
 
     if cache_dir is not None:
         cache = Path(cache_dir).expanduser().resolve()
@@ -457,7 +653,59 @@ def convert_checkpoint(
     return cfg, params
 
 
-def _verify_artifact_integrity(npz_path: Path, metadata: dict[str, Any]) -> dict[str, np.ndarray]:
+def _validate_flat_parameter_names(names: list[str]) -> None:
+    """Validate flat names can be rebuilt unambiguously into dicts/tuples."""
+    leaf = object()
+    root: dict[str | object, Any] = {}
+    for name in names:
+        if not isinstance(name, str) or not name:
+            raise ValueError(f"Artifact parameter name must be a non-empty string, got {name!r}")
+        parts = name.split("/")
+        if any(not part or part in {".", ".."} for part in parts):
+            raise ValueError(f"Artifact parameter name has an invalid path component: {name!r}")
+        node = root
+        for part in parts:
+            if leaf in node:
+                raise ValueError(f"Artifact parameter paths collide at {name!r}")
+            child = node.setdefault(part, {})
+            if not isinstance(child, dict):
+                raise ValueError(f"Artifact parameter paths collide at {name!r}")
+            node = child
+        if node:
+            raise ValueError(f"Artifact parameter paths collide at {name!r}")
+        node[leaf] = True
+
+    def validate_node(node: dict[str | object, Any], path: str) -> None:
+        keys = [key for key in node if key is not leaf]
+        if leaf in node and keys:
+            raise ValueError(f"Artifact parameter paths collide at {path!r}")
+        if not keys:
+            return
+        string_keys = [str(key) for key in keys]
+        numeric = [key.isdigit() for key in string_keys]
+        if any(numeric):
+            if not all(numeric):
+                raise ValueError(
+                    f"Artifact tuple node {path!r} mixes numeric and named children: {sorted(string_keys)}"
+                )
+            expected = [str(index) for index in range(len(string_keys))]
+            if sorted(string_keys, key=int) != expected:
+                raise ValueError(
+                    f"Artifact tuple node {path!r} must use contiguous canonical indices "
+                    f"{expected}, got {sorted(string_keys, key=int)}"
+                )
+        for key in keys:
+            child_path = f"{path}/{key}" if path else str(key)
+            validate_node(node[key], child_path)
+
+    validate_node(root, "")
+
+
+def _verify_artifact_integrity(
+    npz_path: Path,
+    metadata: dict[str, Any],
+    cfg: ModelConfig,
+) -> dict[str, np.ndarray]:
     """Validate the .npz weight artifact against the JSON ``shape_manifest``.
 
     Checks (all hard-fail on mismatch — a divergence means the npz and its
@@ -476,9 +724,20 @@ def _verify_artifact_integrity(npz_path: Path, metadata: dict[str, Any]) -> dict
             f"Artifact metadata for {npz_path.name} is missing a 'shape_manifest'; "
             "the JSON sidecar is malformed. Re-convert the source checkpoint."
         )
+    if not all(isinstance(name, str) for name in manifest):
+        raise ValueError("Artifact shape_manifest keys must all be strings")
+    for name, shape in manifest.items():
+        if not isinstance(shape, list) or any(
+            not isinstance(dim, int) or isinstance(dim, bool) or dim < 1 for dim in shape
+        ):
+            raise ValueError(
+                f"Artifact shape_manifest entry {name!r} must be a list of positive integer dimensions, "
+                f"got {shape!r}"
+            )
+    _validate_flat_parameter_names(list(manifest))
     # np.load as a context manager so the underlying file handle is closed even
     # on early validation errors (previously leaked on every load).
-    with np.load(npz_path) as loaded:
+    with np.load(npz_path, allow_pickle=False) as loaded:
         npz_keys = sorted(loaded.files)
         manifest_keys = sorted(manifest.keys())
         if npz_keys != manifest_keys:
@@ -523,6 +782,12 @@ def _verify_artifact_integrity(npz_path: Path, metadata: dict[str, Any]) -> dict
                 )
             arrays[name] = arr32
 
+    # Run the implementation-specific contract after the ordinary NPZ-vs-
+    # manifest checks. This preserves their more actionable diagnostics while
+    # still rejecting a self-consistent NPZ/sidecar pair whose tensor contract
+    # cannot be consumed safely by the shipped kernels.
+    _validate_parameter_manifest(cfg, manifest, context=f"Artifact {npz_path.name} shape_manifest")
+
     expected_hash = metadata.get("npz_sha256")
     if expected_hash is None:
         # Backward compat: shipped artifacts predate the npz_sha256 field.
@@ -565,6 +830,29 @@ def _validate_loaded_metadata(metadata: dict[str, Any], cfg: ModelConfig, json_p
             f"Artifact {json_path.name} top-level output_names {top_outputs!r} do not match "
             f"model_config output_names {tuple(cfg.output_names)!r}. The metadata is inconsistent; "
             "re-convert the source checkpoint."
+        )
+    top_source_path = metadata.get("source_path")
+    if top_source_path != str(cfg.source_path):
+        raise ValueError(
+            f"Artifact {json_path.name} top-level source_path {top_source_path!r} does not match "
+            f"model_config.source_path {str(cfg.source_path)!r}. The metadata is inconsistent; "
+            "re-convert the source checkpoint."
+        )
+    top_source_sha256 = metadata.get("source_sha256")
+    if top_source_sha256 != cfg.source_sha256:
+        raise ValueError(
+            f"Artifact {json_path.name} top-level source_sha256 {top_source_sha256!r} does not match "
+            f"model_config.source_sha256 {cfg.source_sha256!r}. The metadata is inconsistent; "
+            "re-convert the source checkpoint."
+        )
+    if (
+        not isinstance(cfg.source_sha256, str)
+        or len(cfg.source_sha256) != 64
+        or any(char not in "0123456789abcdef" for char in cfg.source_sha256.lower())
+    ):
+        raise ValueError(
+            f"Artifact {json_path.name} has invalid source_sha256 {cfg.source_sha256!r}; "
+            "expected 64 hexadecimal characters"
         )
     # source_name: only cross-check when the top-level field is present (older
     # artifacts lack it); the model_config value is the source of truth.
@@ -615,22 +903,117 @@ def _verify_metadata_checksum(metadata: dict[str, Any], json_path: Path) -> None
         )
 
 
+def _validate_metadata_schema(metadata: dict[str, Any], json_path: Path) -> dict[str, Any]:
+    required = {
+        "conversion_version",
+        "source_path",
+        "source_sha256",
+        "model_name",
+        "output_names",
+        "model_config",
+        "shape_manifest",
+    }
+    optional = {"source_name", "npz_sha256", "metadata_sha256"}
+    missing = sorted(required - set(metadata))
+    extra = sorted(set(metadata) - required - optional)
+    if "shape_manifest" in missing:
+        raise ValueError(
+            f"Artifact metadata for {json_path.with_suffix('.npz').name} is missing a 'shape_manifest'; "
+            "the JSON sidecar is malformed. Re-convert the source checkpoint."
+        )
+    if missing or extra:
+        raise ValueError(
+            f"Artifact metadata {json_path.name} has an invalid field set "
+            f"(missing={missing}, unexpected={extra})"
+        )
+    model_config = metadata["model_config"]
+    if not isinstance(model_config, dict):
+        raise ValueError(f"Artifact metadata {json_path.name} is missing a valid 'model_config' object")
+    config_required = {
+        "source_path",
+        "source_sha256",
+        "model_name",
+        "cnn_model",
+        "td",
+        "td_2",
+        "pool",
+        "output_names",
+        "feature",
+        "cnn_pool_1",
+        "cnn_pool_2",
+        "cnn_pool_3",
+        "td_sa_d_model",
+        "td_sa_nhead",
+        "td_sa_num_layers",
+        "td_sa_h",
+        "td_lstm_h",
+        "td_lstm_bidirectional",
+    }
+    config_optional = {"source_name"}
+    config_missing = sorted(config_required - set(model_config))
+    config_extra = sorted(set(model_config) - config_required - config_optional)
+    if config_missing or config_extra:
+        raise ValueError(
+            f"Artifact metadata {json_path.name} model_config has an invalid field set "
+            f"(missing={config_missing}, unexpected={config_extra})"
+        )
+    feature = model_config["feature"]
+    feature_fields = {
+        "sr",
+        "n_fft",
+        "hop_length_seconds",
+        "win_length_seconds",
+        "n_mels",
+        "fmax",
+        "seg_length",
+        "seg_hop_length",
+        "max_segments",
+    }
+    if not isinstance(feature, dict) or set(feature) != feature_fields:
+        actual = sorted(feature) if isinstance(feature, dict) else type(feature).__name__
+        raise ValueError(
+            f"Artifact metadata {json_path.name} model_config.feature has invalid fields {actual!r}; "
+            f"expected {sorted(feature_fields)!r}"
+        )
+    for field in ("npz_sha256", "metadata_sha256"):
+        value = metadata.get(field)
+        if value is not None and (
+            not isinstance(value, str)
+            or len(value) != 64
+            or any(char not in "0123456789abcdef" for char in value.lower())
+        ):
+            raise ValueError(
+                f"Artifact metadata {json_path.name} has invalid {field}={value!r}; "
+                "expected 64 hexadecimal characters"
+            )
+    return model_config
+
+
 def load_converted_checkpoint(artifact_path: str | Path) -> tuple[ModelConfig, dict[str, Any]]:
     path = Path(artifact_path).expanduser().resolve()
     metadata_path = _metadata_for_artifact(path)
     npz_path = _npz_for_artifact(path)
     metadata = json.loads(metadata_path.read_text())
-    if int(metadata["conversion_version"]) != CONVERSION_VERSION:
+    if not isinstance(metadata, dict):
+        raise ValueError(f"Artifact metadata {metadata_path.name} must contain a JSON object")
+    version = metadata.get("conversion_version")
+    if not isinstance(version, int) or isinstance(version, bool) or version != CONVERSION_VERSION:
         raise ValueError(
-            f"Converted artifact version {metadata['conversion_version']} is incompatible with "
+            f"Converted artifact version {version!r} is incompatible with "
             f"conversion version {CONVERSION_VERSION}. Re-convert the source checkpoint."
         )
-    cfg = _config_from_metadata(metadata["model_config"])
+    model_config = _validate_metadata_schema(metadata, metadata_path)
+    try:
+        cfg = _config_from_metadata(model_config)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError(
+            f"Artifact metadata {metadata_path.name} contains an invalid model_config: {exc}"
+        ) from exc
     # 1. Semantic validation: reject tampered/inconsistent metadata early so a
     #    bad sidecar never reaches the weight loader (specific diagnostics).
     _validate_loaded_metadata(metadata, cfg, metadata_path)
     # 2. Structural validation: npz keys/shapes/dtypes/finiteness + npz_sha256.
-    arrays = _verify_artifact_integrity(npz_path, metadata)
+    arrays = _verify_artifact_integrity(npz_path, metadata, cfg)
     # 3. Canonical metadata checksum: blanket guard for any remaining field edit.
     _verify_metadata_checksum(metadata, metadata_path)
     params: dict[str, Any] = {}

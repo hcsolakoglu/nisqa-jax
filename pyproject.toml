@@ -1,5 +1,6 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+# SPDX license expressions and `project.license-files` require setuptools 77+.
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -41,6 +42,10 @@ dependencies = [
 
 [project.optional-dependencies]
 convert = ["torch>=2.0"]
+# Convenience extra for editable/source installs on CUDA 12. The tested direct
+# dependency pins are in requirements-gpu.txt; transitive CUDA runtimes remain
+# resolver-managed, so that file is not a full lock.
+cuda12 = ["jax[cuda12_pip]==0.4.30"]
 # `parity` adds torch for the live PyTorch parity tests (test_jax_port.py -m
 # parity). Those tests also require the source .tar checkpoints + the PyTorch
 # reference source repo on disk (see NISQA_SOURCE_WEIGHTS_DIR / PYTORCH_ROOT in
