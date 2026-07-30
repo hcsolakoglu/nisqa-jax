@@ -24,11 +24,11 @@ SOFTWARE.
 
 NOTE ON MODEL WEIGHTS
 
-The pre-converted model weights in weights/ (*.npz) are derived from the
-original NISQA checkpoints created by Gabriel Mittag (TU Berlin). The
+The pre-converted model weights in nisqa_jax/weights/ (*.npz) are derived from
+the original NISQA checkpoints created by Gabriel Mittag (TU Berlin). The
 original weights are licensed under Creative Commons Attribution-
 NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0). See
-weights/LICENSE_model_weights for the full text.
+nisqa_jax/weights/LICENSE_model_weights for the full text.
 
 This MIT license applies to the source code of this JAX port only. The
 weights retain their original CC BY-NC-SA 4.0 license, which prohibits

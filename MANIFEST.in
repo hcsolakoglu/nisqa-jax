@@ -8,13 +8,18 @@
 include LICENSE
 include CITATION.cff
 include README.md
+include CHANGELOG.md
+include CONTRIBUTING.md
+include SECURITY.md
 include pyproject.toml
 include requirements-jax.txt
 include requirements-gpu.txt
-include JAX_INFERENCE_PORT_SPEC.md
 
-# CI + docs
-recursive-include .github *.yml
+# Maintainer and historical design documentation, including the immutable raw
+# benchmark evidence linked by the packaged historical guide.
+recursive-include docs *.md
+include docs/benchmarks/historical/jax-0.4.30-eager-results.json
+include docs/benchmarks/historical/jax-0.4.30-optimized-pytorch.txt
 
 # Release tooling + artifact verifier
 recursive-include scripts *.py
@@ -27,9 +32,6 @@ recursive-include tests *.py *.json *.npz *.b64
 # Bundled weight artifacts (in-package data; also included as package-data
 # in the wheel, but the sdist must carry them for editable/source installs).
 recursive-include nisqa_jax/weights *.npz *.json LICENSE_model_weights CHECKSUMS.sha256
-
-# Adversarial review docs + probe scripts (provenance; not imported at runtime)
-recursive-include adversarial_review *.md *.py *.json *.txt
 
 # Exclude build artifacts / caches from the sdist.
 global-exclude __pycache__

@@ -8,8 +8,11 @@ name = "nisqa-jax"
 version = "0.1.0"
 description = "Standalone JAX inference port for the shipped NISQA checkpoints"
 readme = "README.md"
-license = "MIT"
-license-files = ["LICENSE"]
+# The distribution contains MIT-licensed source and separately licensed
+# CC-BY-NC-SA-4.0 model-weight artifacts. `AND` describes the obligations that
+# apply to the combined wheel; it does not relicense either component.
+license = "MIT AND CC-BY-NC-SA-4.0"
+license-files = ["LICENSE", "nisqa_jax/weights/LICENSE_model_weights"]
 requires-python = ">=3.10"
 authors = [
   { name = "Hasan Can Solakoglu", email = "cansolakoglu130@gmail.com" },
@@ -46,10 +49,10 @@ convert = ["torch>=2.0"]
 cuda12 = ["jax[cuda12]==0.6.2"]
 # `parity` adds torch for the live PyTorch parity tests (test_jax_port.py -m
 # parity). Those tests also require the source .tar checkpoints + the PyTorch
-# reference source repo on disk (see NISQA_SOURCE_WEIGHTS_DIR / PYTORCH_ROOT in
-# tests/test_jax_port.py); installing torch alone is NOT sufficient — they skip
-# cleanly without the source artifacts. CI relies on the self-contained golden
-# parity gate (tests/test_golden_parity.py) instead.
+# reference source repo at `nisqa_pytorch/` (source checkpoints may be
+# redirected with NISQA_SOURCE_WEIGHTS_DIR); installing torch alone is NOT
+# sufficient — tests skip cleanly without the source artifacts. CI relies on
+# the self-contained golden parity gate (tests/test_golden_parity.py) instead.
 parity = ["torch>=2.0", "pytest>=8"]
 # `test` is the CI test extra: pytest only, no torch. The self-contained test
 # suite (golden parity, artifact integrity, validation, prewarm, build
@@ -60,6 +63,8 @@ test = ["pytest>=8"]
 Homepage = "https://github.com/hcsolakoglu/nisqa-jax"
 Repository = "https://github.com/hcsolakoglu/nisqa-jax"
 Issues = "https://github.com/hcsolakoglu/nisqa-jax/issues"
+Documentation = "https://github.com/hcsolakoglu/nisqa-jax/tree/main/docs"
+Changelog = "https://github.com/hcsolakoglu/nisqa-jax/blob/main/CHANGELOG.md"
 
 [project.scripts]
 nisqa-jax = "nisqa_jax.predict:main"
@@ -80,8 +85,8 @@ line-length = 120
 target-version = "py310"
 
 [tool.ruff.lint]
-# F401 unused-import is handled per-file below for re-export shims and probes.
-# E731 lambda assignments appear in benchmark/probe scripts intentionally.
+# F401 unused-import is handled per-file below for re-export shims.
+# E731 lambda assignments appear in benchmark modules intentionally.
 # UP035 (typing.Sequence -> collections.abc) is stylistic modernization only;
 # skipped to avoid churn across the codebase's typing imports.
 select = ["E", "F", "W", "I", "UP", "B"]
@@ -90,14 +95,16 @@ ignore = ["E731", "UP035"]
 [tool.ruff.lint.per-file-ignores]
 # __init__ re-exports symbols it does not define.
 "nisqa_jax/__init__.py" = ["F401"]
-# Benchmark / adversarial probe scripts are standalone scratch tooling; keep
-# their imports and style loose rather than mass-reformatting.
-"adversarial_review/**/*.py" = ["F401", "E402", "E701", "E702", "E401", "B023", "B007", "E741", "I001", "E501"]
 "nisqa_jax/bench*.py" = ["E402"]
 # Test files use an intentional import order: stdlib -> sys.path manipulation ->
 # package imports -> local test utils, with `# noqa: E402` on late imports.
 # Re-sorting would misplace those noqa markers, so leave test import order as-is.
 "tests/**/*.py" = ["I001"]
+
+[tool.pytest.ini_options]
+markers = [
+  "parity: requires trusted source checkpoints, the upstream PyTorch source checkout, and torch",
+]
 
 [tool.mypy]
 python_version = "3.10"
@@ -110,6 +117,5 @@ check_untyped_defs = false
 # the codebase with `# type: ignore` noise.
 exclude = [
   "tests/",
-  "adversarial_review/",
   "nisqa_jax/bench.*",
 ]

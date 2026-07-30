@@ -8,8 +8,6 @@ authors:
     email: cansolakoglu130@gmail.com
 repository-code: "https://github.com/hcsolakoglu/nisqa-jax"
 license: MIT
-version: 0.1.0
-date-released: "2026-07-22"
 keywords:
   - speech-quality
   - NISQA

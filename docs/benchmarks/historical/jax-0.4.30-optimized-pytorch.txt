@@ -1,5 +1,5 @@
 ======================================================================================================================
-DECISIVE BENCHMARK — JAX port vs OPTIMIZED PyTorch (RTX 3070, float32, warm model-forward, compute-only)
+HISTORICAL BENCHMARK — JAX port vs OPTIMIZED PyTorch (RTX 3070, float32, warm model-forward, compute-only)
 Speedup = PT_latency / JAX_latency  (>1 = JAX faster). Median of 60 iters after warmup; compile excluded.
 ======================================================================================================================
 
