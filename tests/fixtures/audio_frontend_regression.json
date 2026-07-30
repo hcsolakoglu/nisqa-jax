@@ -1,0 +1,76 @@
+{
+  "baseline": {
+    "jax": "0.4.30",
+    "jaxlib": "0.4.30",
+    "librosa": "0.10.2.post1",
+    "numpy": "1.26.4",
+    "pandas": "2.1.4",
+    "scipy": "1.11.4",
+    "soundfile": "0.12.1"
+  },
+  "baseline_npz_sha256": "36f8090c8efee9d99e75043a03edd6cd2116ffe78b00a56eee7deee77693580f",
+  "fixture_version": 1,
+  "frontend_atol": 2e-05,
+  "profiles": {
+    "adapt_n_wins": {
+      "dtype": "int32",
+      "shape": []
+    },
+    "adapt_segments": {
+      "dtype": "float32",
+      "shape": [
+        5,
+        1,
+        48,
+        15
+      ]
+    },
+    "adapt_spec": {
+      "dtype": "float32",
+      "shape": [
+        48,
+        33
+      ]
+    },
+    "nisqa_mos_only_scores": {
+      "dtype": "float32",
+      "shape": [
+        1
+      ]
+    },
+    "nisqa_scores": {
+      "dtype": "float32",
+      "shape": [
+        5
+      ]
+    },
+    "nisqa_tts_scores": {
+      "dtype": "float32",
+      "shape": [
+        1
+      ]
+    },
+    "tts_n_wins": {
+      "dtype": "int32",
+      "shape": []
+    },
+    "tts_segments": {
+      "dtype": "float32",
+      "shape": [
+        19,
+        1,
+        48,
+        15
+      ]
+    },
+    "tts_spec": {
+      "dtype": "float32",
+      "shape": [
+        48,
+        33
+      ]
+    }
+  },
+  "score_atol": 1e-06,
+  "wav_sha256": "3a2cdd6f6dacf09bb9c7bdae428efd97e8d922b339ce6915a7d24bb5fd6abbde"
+}
