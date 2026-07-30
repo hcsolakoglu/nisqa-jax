@@ -11,6 +11,7 @@ This test does NOT build itself (that is CI's job); it inspects whatever
 ``dist/`` already contains. If ``dist/`` is empty it skips, so it is safe to
 run in the normal pytest suite (it only activates after a build).
 """
+
 from __future__ import annotations
 
 import os
@@ -26,12 +27,18 @@ DIST = Path(os.environ.get("NISQA_JAX_DIST_DIR", ROOT / "dist"))
 
 def _find_wheel() -> Path | None:
     wheels = sorted(DIST.glob("nisqa_jax-*.whl"))
-    return wheels[-1] if wheels else None
+    if not wheels:
+        return None
+    assert len(wheels) == 1, f"expected exactly one wheel in {DIST}, found: {[p.name for p in wheels]}"
+    return wheels[0]
 
 
 def _find_sdist() -> Path | None:
     sdists = sorted(DIST.glob("nisqa_jax-*.tar.gz"))
-    return sdists[-1] if sdists else None
+    if not sdists:
+        return None
+    assert len(sdists) == 1, f"expected exactly one sdist in {DIST}, found: {[p.name for p in sdists]}"
+    return sdists[0]
 
 
 def _wheel_names(wheel: Path) -> set[str]:
@@ -97,10 +104,24 @@ _REQUIRED_SDIST_FILES = [
     "MANIFEST.in",
     "LICENSE",
     "README.md",
+    "CHANGELOG.md",
+    "CONTRIBUTING.md",
+    "SECURITY.md",
+    "docs/README.md",
+    "docs/architecture.md",
+    "docs/backends.md",
+    "docs/benchmarks/README.md",
+    "docs/benchmarks/historical/README.md",
+    "docs/benchmarks/historical/jax-0.4.30-eager-results.json",
+    "docs/benchmarks/historical/jax-0.4.30-optimized-pytorch.txt",
+    "docs/history/initial-port-design.md",
+    "docs/validation.md",
+    "docs/releasing.md",
     "pyproject.toml",
     "CITATION.cff",
     "requirements-jax.txt",
     "requirements-gpu.txt",
+    "nisqa_jax/weights/LICENSE_model_weights",
 ]
 
 
@@ -134,6 +155,23 @@ def test_wheel_includes_code_modules() -> None:
     assert not missing, f"wheel missing code modules: {missing}"
 
 
+def test_wheel_declares_both_component_licenses() -> None:
+    wheel = _find_wheel()
+    if wheel is None:
+        pytest.skip(f"no wheel in {DIST}; run `python -m build` first")
+    names = _wheel_names(wheel)
+    metadata_names = [name for name in names if name.endswith(".dist-info/METADATA")]
+    assert len(metadata_names) == 1, f"wheel must contain exactly one METADATA file, got {metadata_names}"
+    license_names = [name for name in names if ".dist-info/licenses/" in name]
+    assert any(name.endswith("/LICENSE") for name in license_names), f"wheel missing MIT license file: {license_names}"
+    assert any(
+        name.endswith("/LICENSE_model_weights") for name in license_names
+    ), f"wheel missing model-weight license file: {license_names}"
+    with zipfile.ZipFile(wheel) as zf:
+        metadata = zf.read(metadata_names[0]).decode("utf-8")
+    assert "License-Expression: MIT AND CC-BY-NC-SA-4.0" in metadata
+
+
 def test_wheel_excludes_tests_and_scripts() -> None:
     """Tests/scripts/golden must NOT ship in the wheel (they are sdist-only)."""
     wheel = _find_wheel()
@@ -161,8 +199,7 @@ def test_wheel_top_level_is_only_nisqa_jax() -> None:
     dist_info = {t for t in top_level if t.endswith(".dist-info")}
     packages = top_level - dist_info
     assert packages == {"nisqa_jax"}, (
-        f"wheel top-level must be only nisqa_jax, got {sorted(packages)} "
-        f"(dist-info: {sorted(dist_info)})"
+        f"wheel top-level must be only nisqa_jax, got {sorted(packages)} " f"(dist-info: {sorted(dist_info)})"
     )
     # Explicitly assert no legacy weights package.
     assert "weights" not in packages, "wheel contains a legacy top-level `weights` package"
@@ -178,6 +215,20 @@ def test_sdist_includes_tests_scripts_golden_docs() -> None:
     assert not missing, f"sdist missing required files: {missing}\nprefix={prefix!r}"
 
 
+def test_sdist_excludes_repository_management_files() -> None:
+    sdist = _find_sdist()
+    if sdist is None:
+        pytest.skip(f"no sdist in {DIST}; run `python -m build` first")
+    names = _sdist_names(sdist)
+    prefix = _sdist_prefix(names)
+    excluded_prefixes = (
+        f"{prefix}.github/",
+        f"{prefix}adversarial_review/",
+    )
+    leaked = sorted(name for name in names if name.startswith(excluded_prefixes))
+    assert not leaked, f"sdist leaked repository-management files: {leaked}"
+
+
 def test_sdist_includes_bundled_weights() -> None:
     """The sdist must carry the bundled weight artifacts for source installs."""
     sdist = _find_sdist()
@@ -186,8 +237,7 @@ def test_sdist_includes_bundled_weights() -> None:
     names = _sdist_names(sdist)
     prefix = _sdist_prefix(names)
     required = [
-        f"nisqa_jax/weights/{p}"
-        for p in ("nisqa.npz", "nisqa_mos_only.npz", "nisqa_tts.npz", "CHECKSUMS.sha256")
+        f"nisqa_jax/weights/{p}" for p in ("nisqa.npz", "nisqa_mos_only.npz", "nisqa_tts.npz", "CHECKSUMS.sha256")
     ]
     missing = [f for f in required if f"{prefix}{f}" not in names]
     assert not missing, f"sdist missing bundled weight artifacts: {missing}"
@@ -221,9 +271,7 @@ def test_sdist_excludes_egg_info() -> None:
     # The bare directory entry for the egg-info dir accompanies SOURCES.txt.
     permitted_dir = {n for n in egg_info_entries if n.endswith(".egg-info") and not n.endswith("/")}
     leaked = [n for n in egg_info_entries if n not in permitted and n not in permitted_dir]
-    assert not leaked, (
-        f"sdist leaked egg-info contents (only SOURCES.txt is permitted): {leaked}"
-    )
+    assert not leaked, f"sdist leaked egg-info contents (only SOURCES.txt is permitted): {leaked}"
     # Sanity: if any egg-info entry is present, it must be exactly SOURCES.txt
     # (+ its dir). If setuptools changes to stop force-adding SOURCES.txt, this
     # still passes (empty egg_info_entries); if it starts adding other files,

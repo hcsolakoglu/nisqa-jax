@@ -51,8 +51,7 @@ def _parity_tolerance(checkpoint: Path) -> tuple[float, float]:
     PyTorch's **cuDNN** GPU LSTM is the outlier — its fused kernel accumulates
     the four gates in a different order, drifting to ~3.5e-5 at bs=32/sl=64
     and ~7e-3 at bs=8/sl=6000 (10-100x the CPU paths). The ~1.2e-3 drift
-    previously observed was therefore cuDNN's accumulation, NOT a port bug
-    (see ``adversarial_review/ISSUES_AND_ROADMAP.md`` ISSUE-08).
+    previously observed was therefore cuDNN's accumulation, not a port bug.
 
     Measured full-model CPU parity (JAX vs PT-CPU, 6 seeds x 8 shapes incl.
     bs=32/sl=64, bs=8/sl=128, bs=8/sl=6000) peaks at 8.9e-6. 5e-5 gives a
@@ -165,6 +164,7 @@ def test_standalone_artifact_metadata_manifest(artifact: Path) -> None:
     assert all("/q/" not in name and "/k/" not in name and "/v/" not in name for name in metadata["shape_manifest"])
 
 
+@pytest.mark.parity
 @pytest.mark.parametrize("checkpoint", SOURCE_CHECKPOINTS)
 def test_checkpoint_conversion_cache_is_deterministic(checkpoint: Path, tmp_path: Path) -> None:
     _require_source_checkpoints()
@@ -186,6 +186,7 @@ def test_checkpoint_conversion_cache_is_deterministic(checkpoint: Path, tmp_path
         np.testing.assert_array_equal(npz_a[name], npz_b[name])
 
 
+@pytest.mark.parity
 @pytest.mark.parametrize("checkpoint", SOURCE_CHECKPOINTS)
 def test_standalone_artifact_matches_fresh_conversion(checkpoint: Path, tmp_path: Path) -> None:
     _require_source_checkpoints()
@@ -215,6 +216,7 @@ def test_standalone_artifact_matches_fresh_conversion(checkpoint: Path, tmp_path
         np.testing.assert_array_equal(artifact[name], fresh[name])
 
 
+@pytest.mark.parity
 def test_segment_melspec_matches_pytorch() -> None:
     _, _, torch_segment_specs = _require_torch_reference()
     cfg, _ = load_converted_checkpoint(WEIGHTS_ROOT / "nisqa_mos_only.npz")
@@ -234,6 +236,7 @@ def test_segment_melspec_matches_pytorch() -> None:
     assert int(jax_n) == int(torch_n)
 
 
+@pytest.mark.parity
 def test_segment_melspec_hop_matches_pytorch() -> None:
     _, _, torch_segment_specs = _require_torch_reference()
     cfg, _ = load_converted_checkpoint(WEIGHTS_ROOT / "nisqa_mos_only.npz")
@@ -267,6 +270,7 @@ def test_too_short_sample_error_mentions_path() -> None:
         segment_melspec("tiny.wav", spec, cfg.feature)
 
 
+@pytest.mark.parity
 @pytest.mark.parametrize("checkpoint", SOURCE_CHECKPOINTS)
 def test_jax_forward_matches_pytorch_checkpoint(checkpoint: Path) -> None:
     torch, torch_model, _ = _torch_model(checkpoint)
@@ -280,6 +284,7 @@ def test_jax_forward_matches_pytorch_checkpoint(checkpoint: Path) -> None:
     np.testing.assert_allclose(actual, expected, rtol=rtol, atol=atol)
 
 
+@pytest.mark.parity
 @pytest.mark.parametrize("checkpoint", SOURCE_CHECKPOINTS)
 def test_jax_staged_outputs_match_pytorch_checkpoint(checkpoint: Path) -> None:
     torch, torch_model, _ = _torch_model(checkpoint)
@@ -318,11 +323,11 @@ def _bf16_tolerance(artifact: Path) -> tuple[float, float]:
     """
     name = artifact.name
     if name == "nisqa_mos_only.npz":
-        return 4e-3, 4e-3      # ~3.6x measured 1.10e-3
+        return 4e-3, 4e-3  # ~3.6x measured 1.10e-3
     if name == "nisqa.npz":
-        return 8e-3, 8e-3      # ~4.0x measured 2.01e-3
+        return 8e-3, 8e-3  # ~4.0x measured 2.01e-3
     if name == "nisqa_tts.npz":
-        return 4e-2, 4e-2      # ~3.2x measured 1.23e-2
+        return 4e-2, 4e-2  # ~3.2x measured 1.23e-2
     return 8e-2, 8e-2  # fallback for unknown checkpoints
 
 
@@ -415,7 +420,10 @@ def test_bf16_outputs_are_finite_and_close_to_float32(artifact: Path) -> None:
     assert actual.dtype == np.float32
     assert np.isfinite(actual).all()
     np.testing.assert_allclose(
-        actual, expected, rtol=rtol, atol=atol,
+        actual,
+        expected,
+        rtol=rtol,
+        atol=atol,
         err_msg=f"bf16 drift exceeds tolerance for {artifact.name} (max_abs_err={max_abs_err:.3e})",
     )
 
@@ -566,6 +574,7 @@ def test_predict_file_dict_api_keeps_output_names(tmp_path: Path) -> None:
     assert list(out.keys()) == list(model.config.output_names)
 
 
+@pytest.mark.parity
 @pytest.mark.parametrize("checkpoint", SOURCE_CHECKPOINTS)
 def test_generated_wav_prediction_matches_pytorch(checkpoint: Path, tmp_path: Path) -> None:
     torch, torch_model, _ = _torch_model(checkpoint)
@@ -609,8 +618,10 @@ def test_stereo_channel_prediction_path(tmp_path: Path) -> None:
 # O1: per-file error isolation in predict_batch (on_error="collect"/"raise")
 # ---------------------------------------------------------------------------
 
+
 def _patch_preprocess_with_one_bad(monkeypatch: pytest.MonkeyPatch, cfg, paths, bad_idx):
     """estimate_n_wins succeeds for all; preprocess_file raises for `bad_idx`."""
+
     def fake_estimate_n_wins(path: Path, feature_cfg) -> int:
         assert feature_cfg == cfg
         return 4
@@ -710,6 +721,7 @@ def test_predict_batch_rejects_invalid_on_error() -> None:
 # ---------------------------------------------------------------------------
 # O2(b): auto_batch OOM recovery
 # ---------------------------------------------------------------------------
+
 
 def test_predict_batch_auto_batch_recovers_from_oom(monkeypatch: pytest.MonkeyPatch) -> None:
     # Simulate a GPU that OOMs above batch_size=2: predict_segments raises an

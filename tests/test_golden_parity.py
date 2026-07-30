@@ -35,6 +35,7 @@ independently of the final-output PyTorch parity.
 The optional live PyTorch parity tests in ``test_jax_port.py`` remain for
 environments that have the source checkpoints + torch installed.
 """
+
 from __future__ import annotations
 
 import json
@@ -59,7 +60,7 @@ from nisqa_jax.weights import WEIGHTS_DIR  # noqa: E402
 # golden vectors were produced by this same JAX port on the same deterministic
 # inputs, so on the same JAX/numpy version the JAX-vs-golden match is exact
 # (0.0). A small tolerance absorbs cross-version floating-point reordering
-# (e.g. jaxlib 0.4.30 vs 0.4.38 may differ at the ULP level in reductions)
+# (e.g. jaxlib 0.4.30 vs 0.6.2 may differ at the ULP level in reductions)
 # without being loose enough to mask a real regression. The PyTorch-reference
 # max-abs (recorded per fixture) is ~1e-6, so 5e-5 is the same safety margin
 # used by the live parity suite and is far tighter than any plausible port
@@ -93,9 +94,9 @@ def _make_inputs(
 _FIXTURES = _golden_fixtures()
 
 
-def _skip_if_no_fixtures() -> None:
+def _require_fixtures() -> None:
     if not _FIXTURES:
-        pytest.skip(f"no golden fixtures found in {GOLDEN_DIR}")
+        pytest.fail(f"no golden fixtures found in {GOLDEN_DIR}; golden parity cannot be validated")
 
 
 def _require_artifact(artifact: Path) -> None:
@@ -185,13 +186,13 @@ def test_jax_staged_intermediates_match_golden(artifact: Path, golden_json: Path
             for stage_key in ("cnn", "td"):
                 actual = stages["cnn" if stage_key == "cnn" else "time_dependency"]
                 expected = loaded[f"{stage_key}_{idx}"]
-                assert actual.shape == expected.shape, (
-                    f"input {idx} stage {stage_key}: shape {actual.shape} != golden {expected.shape}"
-                )
+                assert (
+                    actual.shape == expected.shape
+                ), f"input {idx} stage {stage_key}: shape {actual.shape} != golden {expected.shape}"
                 max_abs = float(np.max(np.abs(actual - expected)))
-                assert max_abs <= GOLDEN_MAX_ABS_TOL, (
-                    f"input {idx} stage {stage_key}: max|jax-golden| = {max_abs:.3e} > {GOLDEN_MAX_ABS_TOL:.0e}"
-                )
+                assert (
+                    max_abs <= GOLDEN_MAX_ABS_TOL
+                ), f"input {idx} stage {stage_key}: max|jax-golden| = {max_abs:.3e} > {GOLDEN_MAX_ABS_TOL:.0e}"
 
 
 @pytest.mark.parametrize("artifact,golden_json", _FIXTURES, ids=[p[0].stem for p in _FIXTURES])
@@ -215,19 +216,19 @@ def test_ptref_trust_chain(artifact: Path, golden_json: Path) -> None:
     manifest_entry = manifest.get(stem, {})
     expected_manifest_sha = manifest_entry.get("ptref_sha256")
     expected_sidecar_sha = meta.get("ptref_sha256")
-    assert expected_manifest_sha is not None, (
-        f"{stem}: GOLDEN_MANIFEST.json missing ptref_sha256; regenerate golden fixtures"
-    )
-    assert expected_sidecar_sha is not None, (
-        f"{golden_json.name}: sidecar missing ptref_sha256; regenerate golden fixtures"
-    )
+    assert (
+        expected_manifest_sha is not None
+    ), f"{stem}: GOLDEN_MANIFEST.json missing ptref_sha256; regenerate golden fixtures"
+    assert (
+        expected_sidecar_sha is not None
+    ), f"{golden_json.name}: sidecar missing ptref_sha256; regenerate golden fixtures"
     assert ptref_sha == expected_manifest_sha, (
         f"{stem}: ptref raw sha256 {ptref_sha[:12]}… != manifest {expected_manifest_sha[:12]}… "
         "(ptref file tampered/bit-rotted since commit)"
     )
-    assert ptref_sha == expected_sidecar_sha, (
-        f"{golden_json.name}: ptref raw sha256 {ptref_sha[:12]}… != sidecar {expected_sidecar_sha[:12]}…"
-    )
+    assert (
+        ptref_sha == expected_sidecar_sha
+    ), f"{golden_json.name}: ptref raw sha256 {ptref_sha[:12]}… != sidecar {expected_sidecar_sha[:12]}…"
 
     # 2. Key/shape completeness: one out_{i} per recorded input, matching the
     #    golden output shapes (PyTorch and JAX produce the same output shapes).
@@ -237,18 +238,15 @@ def test_ptref_trust_chain(artifact: Path, golden_json: Path) -> None:
         ptref_keys = sorted(ptref.files)
         expected_keys = [f"out_{i}" for i in range(n_inputs)]
         assert ptref_keys == expected_keys, (
-            f"{stem}: ptref keys {ptref_keys} != expected {expected_keys} "
-            f"(n_inputs={n_inputs})"
+            f"{stem}: ptref keys {ptref_keys} != expected {expected_keys} " f"(n_inputs={n_inputs})"
         )
         for i in range(n_inputs):
             pt_arr = ptref[f"out_{i}"]
             g_arr = golden[f"out_{i}"]
-            assert pt_arr.shape == g_arr.shape, (
-                f"{stem} out_{i}: ptref shape {pt_arr.shape} != golden shape {g_arr.shape}"
-            )
-            assert pt_arr.dtype.kind == "f", (
-                f"{stem} out_{i}: ptref dtype {pt_arr.dtype} is not floating-point"
-            )
+            assert (
+                pt_arr.shape == g_arr.shape
+            ), f"{stem} out_{i}: ptref shape {pt_arr.shape} != golden shape {g_arr.shape}"
+            assert pt_arr.dtype.kind == "f", f"{stem} out_{i}: ptref dtype {pt_arr.dtype} is not floating-point"
 
 
 @pytest.mark.parametrize("artifact,golden_json", _FIXTURES, ids=[p[0].stem for p in _FIXTURES])
@@ -279,9 +277,7 @@ def test_jax_outputs_match_pytorch_reference(artifact: Path, golden_json: Path) 
             )
             out = model.predict_segments(x, nw)
             pt_out = ptref[f"out_{idx}"]
-            assert out.shape == pt_out.shape, (
-                f"input {idx}: jax shape {out.shape} != pytorch ref shape {pt_out.shape}"
-            )
+            assert out.shape == pt_out.shape, f"input {idx}: jax shape {out.shape} != pytorch ref shape {pt_out.shape}"
             max_abs = float(np.max(np.abs(out - pt_out)))
             assert max_abs <= GOLDEN_MAX_ABS_TOL, (
                 f"input {idx} (seed={entry['seed']}, bs={entry['batch']}, steps={entry['steps']}): "
@@ -307,9 +303,9 @@ def test_recorded_jax_vs_pytorch_max_abs_is_truthful(artifact: Path, golden_json
     golden_npz = _require_golden_npz(golden_json)
 
     recorded = meta.get("jax_vs_pytorch_max_abs")
-    assert recorded is not None, (
-        f"{golden_json.name}: missing jax_vs_pytorch_max_abs provenance; regenerate with --pytorch-ref"
-    )
+    assert (
+        recorded is not None
+    ), f"{golden_json.name}: missing jax_vs_pytorch_max_abs provenance; regenerate with --pytorch-ref"
     recomputed = 0.0
     with np.load(golden_npz) as golden, np.load(ptref_path) as ptref:
         for i in range(len(meta["inputs"])):
@@ -323,14 +319,14 @@ def test_recorded_jax_vs_pytorch_max_abs_is_truthful(artifact: Path, golden_json
         "from committed golden+ptref (provenance field is inconsistent with the committed vectors)"
     )
     # The provenance value itself must satisfy the parity bound.
-    assert recorded <= GOLDEN_MAX_ABS_TOL, (
-        f"{stem}: recorded jax_vs_pytorch_max_abs={recorded:.3e} exceeds {GOLDEN_MAX_ABS_TOL:.0e} parity bound"
-    )
+    assert (
+        recorded <= GOLDEN_MAX_ABS_TOL
+    ), f"{stem}: recorded jax_vs_pytorch_max_abs={recorded:.3e} exceeds {GOLDEN_MAX_ABS_TOL:.0e} parity bound"
 
 
 def test_golden_manifest_consistency() -> None:
     """The top-level GOLDEN_MANIFEST.json must list every committed fixture consistently."""
-    _skip_if_no_fixtures()
+    _require_fixtures()
     manifest_path = GOLDEN_DIR / "GOLDEN_MANIFEST.json"
     if not manifest_path.exists():
         pytest.fail("GOLDEN_MANIFEST.json missing; re-run scripts/generate_golden_fixtures.py")
@@ -342,20 +338,18 @@ def test_golden_manifest_consistency() -> None:
         assert golden_npz.exists(), f"manifest lists missing {golden_npz}"
         assert golden_json.exists(), f"manifest lists missing {golden_json}"
         # Manifest checksum must match the on-disk golden npz.
-        assert _sha256(golden_npz) == entry["golden_sha256"], (
-            f"{stem}: golden npz checksum drift (manifest vs disk)"
-        )
+        assert _sha256(golden_npz) == entry["golden_sha256"], f"{stem}: golden npz checksum drift (manifest vs disk)"
         # Artifact checksum must match the shipped artifact.
         artifact = WEIGHTS_ROOT / f"{stem}.npz"
         assert artifact.exists(), f"artifact {artifact} missing"
-        assert _sha256(artifact) == entry["artifact_sha256"], (
-            f"{stem}: shipped artifact checksum drift; regenerate golden fixtures"
-        )
+        assert (
+            _sha256(artifact) == entry["artifact_sha256"]
+        ), f"{stem}: shipped artifact checksum drift; regenerate golden fixtures"
         # Provenance: every fixture must record a PyTorch-reference max-abs diff
         # (the generation script captures this when --pytorch-ref is given).
-        assert entry.get("jax_vs_pytorch_max_abs") is not None, (
-            f"{stem}: golden fixture lacks PyTorch provenance; regenerate with --pytorch-ref"
-        )
+        assert (
+            entry.get("jax_vs_pytorch_max_abs") is not None
+        ), f"{stem}: golden fixture lacks PyTorch provenance; regenerate with --pytorch-ref"
         assert entry["jax_vs_pytorch_max_abs"] <= 5e-5, (
             f"{stem}: golden fixture's jax_vs_pytorch_max_abs "
             f"{entry['jax_vs_pytorch_max_abs']:.3e} exceeds 5e-5 parity bound"
@@ -367,17 +361,13 @@ def test_golden_manifest_consistency() -> None:
         assert ptref_name is not None, f"{stem}: manifest missing ptref_npz; regenerate with --pytorch-ref"
         assert ptref_sha is not None, f"{stem}: manifest missing ptref_sha256; regenerate with --pytorch-ref"
         ptref_path = GOLDEN_DIR / ptref_name
-        assert ptref_path.exists(), (
-            f"{stem}: manifest lists ptref {ptref_name} but file is missing on disk"
-        )
-        assert _sha256(ptref_path) == ptref_sha, (
-            f"{stem}: ptref {ptref_name} raw sha256 drift (manifest vs disk)"
-        )
+        assert ptref_path.exists(), f"{stem}: manifest lists ptref {ptref_name} but file is missing on disk"
+        assert _sha256(ptref_path) == ptref_sha, f"{stem}: ptref {ptref_name} raw sha256 drift (manifest vs disk)"
 
 
 def test_golden_fixtures_cover_all_shipped_artifacts() -> None:
     """Every shipped .npz artifact must have a corresponding golden fixture."""
-    _skip_if_no_fixtures()
+    _require_fixtures()
     manifest = json.loads((GOLDEN_DIR / "GOLDEN_MANIFEST.json").read_text())
     shipped = {p.stem for p in WEIGHTS_DIR.glob("*.npz")}
     covered = set(manifest)

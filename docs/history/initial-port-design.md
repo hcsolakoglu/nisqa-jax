@@ -1,4 +1,10 @@
-# JAX Inference Port Specification
+# Initial JAX inference-port design
+
+Status: historical design record for the original port. It explains the scope
+and parity goals, but it is not the normative description of every shipped
+implementation detail. The current contracts live in
+[architecture.md](../architecture.md),
+[validation.md](../validation.md), and the public API docstrings.
 
 ## Summary
 
@@ -8,21 +14,25 @@ Port only the inference path for the three shipped checkpoints:
 - `nisqa_mos_only.tar`: `NISQA`, adaptive CNN + self-attention + one attention-pooling head.
 - `nisqa_tts.tar`: `NISQA`, standard CNN + bidirectional LSTM + last-step-bi pooling.
 
-Keep Librosa-compatible CPU feature extraction in v1 for exact input parity, then run the model forward pass in JAX on a single NVIDIA GPU. Do not port training, finetuning, evaluation metrics, or the unshipped double-ended `NISQA_DE` model.
+Keep Librosa-compatible host feature extraction for exact input parity, then
+run the model forward pass in JAX on the selected CPU, CUDA, or TPU backend.
+CPU and CUDA are empirically validated; TPU remains code-audited only. Do not
+port training, finetuning, evaluation metrics, or the unshipped double-ended
+`NISQA_DE` model.
 
 References for implementation choices: JAX recommends outermost `jit` for performance and `block_until_ready()` for benchmarks, plus explicit device placement to avoid transfer skew ([JAX benchmarking](https://docs.jax.dev/en/latest/benchmarking.html)); persistent compilation cache should be enabled before first compile ([JAX cache](https://docs.jax.dev/en/latest/persistent_compilation_cache.html)); transfer guard can catch accidental host/device transfers ([JAX transfer guard](https://docs.jax.dev/en/latest/transfer_guard.html)); recent GPU performance guidance includes matmul precision and XLA flags with version-dependent behavior ([JAX GPU tips](https://docs.jax.dev/en/latest/gpu_performance_tips.html)). The v1 implementation should stay pure JAX unless Flax removes concrete complexity; this keeps checkpoint parity and dependency management simpler.
 
 ## Public API And Packaging
 
-Create a new JAX inference package alongside the PyTorch code, e.g. `nisqa_jax/`, with these public entrypoints:
+Provide a standalone `nisqa_jax/` package with these public entrypoints:
 
-- `load_model(checkpoint_path: str | Path, *, device: str | None = None, cache_dir: str | Path | None = None) -> NisqaJaxModel`
+- `load_model(checkpoint_path: str | Path, *, device: str | None = None, cache_dir: str | Path | None = None, precision: Literal["float32", "bf16"] = "float32") -> NisqaJaxModel`
   - Loads either a standalone converted JAX `.npz` artifact with sidecar JSON metadata or, when optional PyTorch is installed, an original PyTorch `.tar` checkpoint.
   - The standalone `.npz` path is the normal inference path and does not require the original PyTorch source checkout.
 - `predict_file(model, wav_path, *, channel=None) -> dict[str, float]`
-  - Returns `{mos, noi, dis, col, loud}` for `nisqa.tar`, `{mos}` for `nisqa_mos_only.tar`, and `{naturalness}` or `{mos}` with documented alias for `nisqa_tts.tar`.
+  - Returns `{mos, noi, dis, col, loud}` for `nisqa.tar`, `{mos}` for `nisqa_mos_only.tar`, and `{naturalness}` for `nisqa_tts.tar`.
 - `predict_batch(model, wav_paths, *, batch_size=..., channel=None) -> pandas.DataFrame`
-  - Uses Librosa feature extraction on host, pads to model-specific static max segments, batches by compatible shape.
+  - Uses Librosa feature extraction on host, groups similar lengths, pads each chunk to a bounded bucket shape, and preserves input row identity.
 - CLI parity command: `python -m nisqa_jax.predict --mode predict_file|predict_dir|predict_csv --pretrained_model ...`
   - Match existing PyTorch arguments where practical: `--deg`, `--data_dir`, `--csv_file`, `--csv_deg`, `--output_dir`, `--bs`, `--ms_channel`.
 
@@ -35,11 +45,13 @@ Implement inference as pure JAX functions with explicit param pytrees and a thin
 - Audio/frontend:
   - Keep existing Librosa settings exactly: `n_fft=4096`, `hop_length=int(sr*0.01)`, `win_length=int(sr*0.02)`, `power=1.0`, `amplitude_to_db(ref=1.0, amin=1e-4, top_db=80)`.
   - Preserve checkpoint-specific `fmax`, `seg_hop_length`, `ms_max_segments`, `cnn_model`, and output dimensions.
-  - Segment exactly like PyTorch: input `[mel, time]` to `[windows, 1, mel, seg_length]`, then pad to `ms_max_segments`.
+  - Segment exactly like PyTorch: input `[mel, time]` to `[windows, 1, mel, seg_length]`; retain only real windows and defer bounded padding to batch assembly.
 
 - JAX model kernels:
   - CNN: implement `conv_general_dilated` in NHWC internally for GPU efficiency; convert PyTorch OIHW conv weights to HWIO once during conversion.
-  - BatchNorm: inference-only affine normalization using PyTorch `running_mean`, `running_var`, `weight`, `bias`, and epsilon matching PyTorch default.
+  - BatchNorm: fold PyTorch `running_mean`, `running_var`, `weight`, `bias`,
+    and epsilon into each convolution during conversion; no BatchNorm runs at
+    inference time.
   - Adaptive CNN pooling: implement exact PyTorch-compatible adaptive max pool for fixed target sizes `[24,7]`, `[12,5]`, `[6,3]`; validate against PyTorch layer outputs.
   - Standard CNN pooling: match PyTorch max-pool padding/stride behavior for TTS.
   - Self-attention: split PyTorch `in_proj_weight`/bias into q/k/v, use mask from `n_wins`, apply softmax with `-inf` masked positions, preserve layer norm and FFN order.
@@ -47,24 +59,27 @@ Implement inference as pure JAX functions with explicit param pytrees and a thin
   - TTS LSTM: implement a custom bidirectional LSTM with `jax.lax.scan`, PyTorch gate order, and PyTorch bias semantics (`bias_ih + bias_hh`), then last-step-bi pooling.
 
 - Weight conversion:
-  - Provide deterministic converter from PyTorch checkpoint to JAX `.npz`/msgpack cache, with strict state-key accounting.
+  - Provide a deterministic converter from a PyTorch checkpoint to `.npz`
+    tensors plus JSON metadata, with strict state-key accounting.
   - Convert linear weights from PyTorch `[out,in]` to JAX `[in,out]`; conv weights `[out,in,h,w]` to `[h,w,in,out]`.
   - Drop `num_batches_tracked`; preserve all trainable weights, BN running stats, layer norm stats, attention projections, pool heads, and LSTM forward/reverse weights.
   - Store converted artifact metadata: source checkpoint hash, conversion version, architecture args, tensor shape manifest.
-  - Publish stable converted artifacts under top-level `weights/` for standalone JAX inference.
+  - Publish stable converted artifacts under `nisqa_jax/weights/` as package data for standalone JAX inference.
 
 ## Performance Requirements
 
 Optimize for warmed single-GPU inference after feature extraction.
 
-- Wrap the full batched forward pass in one outer `jax.jit`, with static model type and static padded segment length to avoid recompilation.
+- Wrap the full batched forward pass in one outer `jax.jit`, with model parameters and bounded batch/segment shapes suitable for cache reuse.
 - Pre-place params and input batches with `jax.device_put`; avoid per-layer or per-sample host/device transfers.
 - Enable persistent compilation cache via `JAX_COMPILATION_CACHE_DIR` or `cache_dir` before first compilation.
-- Crop each batch to its actual maximum valid segment count before device transfer, then cache/JIT by `(model_id, batch_size, cropped_segments)`. This matches PyTorch packed-sequence behavior and avoids running CNN/LSTM work over padded windows.
+- Crop each batch to its actual maximum valid segment count, round to the configured model-specific bucket, and cache/JIT by effective batch and segment shape. This avoids running CNN/LSTM work over model-wide maximum padding while bounding compilation-shape proliferation.
 - Benchmark with warmup excluded and `.block_until_ready()` included.
-- Use `jax.transfer_guard("log")` in performance tests to detect accidental implicit transfers.
-- Use `jax.default_matmul_precision("tensorfloat32")` on NVIDIA GPUs for speed only after parity tests confirm output drift stays within tolerance; keep strict float32 mode for conformance tests.
-- Target acceptance: JAX warmed model-forward latency is at least 2x faster than PyTorch for the two self-attention checkpoints at batch sizes 8 and 16 on the same NVIDIA GPU. For `nisqa_tts.tar`, which compares against PyTorch/cuDNN LSTM, require materially faster warmed forward latency, with a target of at least 1.5x at batch 8 and 2x at batch 16. End-to-end speedup is reported separately because Librosa remains CPU-bound in v1.
+- Use JAX transfer guard in performance tests to detect accidental implicit transfers.
+- Keep `jax.default_matmul_precision("float32")` for the implemented
+  conformance path. The supported reduced-precision option is explicit
+  `precision="bf16"` with float32 reductions; do not infer a TF32 mode.
+- Performance acceptance is evidence-based rather than universal: report warmed model-forward and end-to-end results separately, retain the exact hardware/software environment, and do not update headline claims from a smoke test. Librosa remains CPU-bound.
 
 ## Validation Tests
 
@@ -85,7 +100,7 @@ Add a test suite that compares JAX against the existing PyTorch implementation a
 - Golden inference tests:
   - Generate deterministic WAV fixtures: silence, sine sweep, clipped sine, short valid speech-like noise, and a stereo file with channel selection.
   - Run PyTorch and JAX for all three checkpoints on the same fixtures.
-  - Acceptance: final predictions match PyTorch within `max_abs_error <= 1e-3` for strict float32 mode.
+  - Acceptance: final predictions match the PyTorch CPU reference within the repository's `5e-5` strict float32 bound.
   - CSV/dir/file modes preserve row order and output columns.
 
 - Failure-mode tests:
@@ -104,6 +119,6 @@ Add a test suite that compares JAX against the existing PyTorch implementation a
 
 - "Three models" means the three shipped checkpoint files, not `NISQA_DE`.
 - Librosa remains the source of truth for features in v1; a JAX audio frontend is a later optimization after model parity is locked.
-- Local validation pins JAX to `0.4.30` to keep NumPy at `1.26.x`, which is compatible with the existing pandas/librosa stack. GPU deployments should install the matching CUDA JAX wheel for the target driver.
+- Compatibility validation covers matched JAX/jaxlib 0.4.30, 0.5.3, and 0.6.2 stacks. The current direct CPU/CUDA pins use JAX 0.6.2 and NumPy 2.2.6; CUDA deployments install `jax[cuda12]` in a separate environment.
 - Strict parity tests run in float32 precision; faster TF32/bfloat16 options are opt-in and must pass relaxed drift checks before being enabled by default.
 - Training, finetuning, dataset evaluation metrics, plotting, and double-ended inference are out of scope for this port.

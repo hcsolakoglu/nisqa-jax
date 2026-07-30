@@ -35,6 +35,7 @@ Thumbs.db
 
 # Original PyTorch checkpoints (not needed — use converted .npz instead)
 *.tar
+/nisqa_pytorch/
 
 # Audio files (test fixtures live in tests/; don't commit user data)
 *.wav
