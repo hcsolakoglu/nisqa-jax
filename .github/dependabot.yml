@@ -11,7 +11,7 @@
 # versions and the `pip install "ruff==..."` lines in ci.yml) -- Dependabot's
 # pip ecosystem only scans package manifest files, not arbitrary YAML strings.
 # Those inline pins require manual review (or adopt a real update mechanism
-# such as a scheduled rennovate bot or a pip-compile pipeline) to stay current.
+# such as a scheduled Renovate bot or a pip-compile pipeline) to stay current.
 version: 2
 updates:
   # GitHub Actions: bump the SHA-pinned actions in ci.yml.
@@ -23,6 +23,9 @@ updates:
     commit-message:
       prefix: "ci: "
     labels: ["ci", "dependencies"]
+    groups:
+      actions:
+        patterns: ["*"]
 
   # pip: bump declared Python deps in pyproject.toml / requirements files.
   # NOTE: this does NOT bump the inline ruff/mypy/build pins in ci.yml (those
@@ -35,3 +38,13 @@ updates:
     commit-message:
       prefix: "deps: "
     labels: ["ci", "dependencies"]
+    groups:
+      runtime-stack:
+        patterns:
+          - "jax"
+          - "jaxlib"
+          - "numpy"
+          - "scipy"
+          - "pandas"
+          - "librosa"
+          - "soundfile"

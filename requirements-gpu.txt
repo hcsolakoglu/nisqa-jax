@@ -1,0 +1,13 @@
+# Tested NVIDIA CUDA 12 direct-dependency pins for the JAX inference port.
+#
+# Do not combine this with requirements-jax.txt: that CPU stack does not
+# install the CUDA plugin/runtime packages. The cuda12 extra installs the
+# matching plugin/runtime packages for JAX 0.6.2.
+# Transitive NVIDIA runtime packages are resolver-managed; this is not a
+# complete lockfile. Record the resolved environment for release benchmarks.
+jax[cuda12]==0.6.2
+numpy==2.2.6
+scipy==1.15.3
+librosa==0.10.2.post1
+pandas==2.3.3
+soundfile==0.12.1

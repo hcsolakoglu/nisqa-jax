@@ -36,6 +36,7 @@ def _is_oom(exc: BaseException) -> bool:
         return True
     return any(tok in str(exc).lower() for tok in _OOM_TOKENS)
 
+
 # Internal output name -> PyTorch-compatible CSV column. The original NISQA
 # (gabrielmittag/NISQA: NISQA_model.py:76-79, NISQA_lib.py:1461-1465) writes a
 # `*_pred` suffix for every head and a `model` column holding the run name.
@@ -164,9 +165,7 @@ def _validate_batch_size(batch_size: Any) -> int:
     """batch_size must be a true integer >= 1 (bool/float rejected)."""
     # bool is a subclass of int — reject True/False so they are not silently 1/0.
     if isinstance(batch_size, bool) or not isinstance(batch_size, int):
-        raise ValueError(
-            f"batch_size must be an int >= 1, got {batch_size!r} ({type(batch_size).__name__})"
-        )
+        raise ValueError(f"batch_size must be an int >= 1, got {batch_size!r} ({type(batch_size).__name__})")
     if batch_size < 1:
         raise ValueError(f"batch_size must be >= 1, got {batch_size}")
     return batch_size
@@ -180,9 +179,7 @@ def _validate_positive_int(value: Any, name: str) -> int:
     >= 1 check with a confusing message). Reject non-int types explicitly.
     """
     if isinstance(value, bool) or not isinstance(value, int):
-        raise ValueError(
-            f"{name} must be an int >= 1, got {value!r} ({type(value).__name__})"
-        )
+        raise ValueError(f"{name} must be an int >= 1, got {value!r} ({type(value).__name__})")
     if value < 1:
         raise ValueError(f"{name} must be >= 1, got {value}")
     return value
@@ -224,7 +221,7 @@ def _cost_aware_batch_size(length: int, ref_len: int, max_bs: int, *, exponent: 
     if max_bs < 1:
         return 1
     ratio = ref_len / max(length, 1)
-    cap = max(1, int(max_bs * (ratio ** exponent)))
+    cap = max(1, int(max_bs * (ratio**exponent)))
     p = 1
     while p * 2 <= cap and p * 2 <= max_bs:
         p *= 2
@@ -352,8 +349,7 @@ def predict_batch(
         raise ValueError(f"batch_mode must be 'fixed' or 'cost_aware', got {batch_mode!r}")
     if batch_mode == "cost_aware" and not sort_by_length:
         raise ValueError(
-            "batch_mode='cost_aware' requires sort_by_length=True "
-            "(it isolates the long tail by sorted rank)"
+            "batch_mode='cost_aware' requires sort_by_length=True " "(it isolates the long tail by sorted rank)"
         )
     batch_size = _validate_batch_size(batch_size)
     preprocess_workers = _validate_positive_int(preprocess_workers, "preprocess_workers")
@@ -419,6 +415,12 @@ def predict_batch(
     else:
         chunked_idx = [(chunk, effective_bs) for chunk in _fixed_chunks(order, effective_bs)]
 
+    # In collect mode every header estimate may have failed, leaving no viable
+    # preprocessing chunk. Emit the already-recorded ordered error rows instead
+    # of entering the parallel prefetch path and indexing an empty schedule.
+    if not chunked_idx:
+        return _emit(results, collect, model)
+
     def _predict_padded(prepared: list, cur_bs: int) -> np.ndarray:
         # prepared: list of (segments[n_wins, 1, n_mels, seg_length], n_wins).
         # Pad to the chunk's real max rounded up to the bucket grid (fewer
@@ -457,12 +459,11 @@ def predict_batch(
             new_bs = max(1, cur_bs // 2)
             logger.warning(
                 "auto_batch: GPU OOM at batch_size=%d (%d samples); retrying at %d",
-                cur_bs, len(prepared), new_bs,
+                cur_bs,
+                len(prepared),
+                new_bs,
             )
-            outs = [
-                _predict_with_auto_batch(prepared[s : s + new_bs], new_bs)
-                for s in range(0, len(prepared), new_bs)
-            ]
+            outs = [_predict_with_auto_batch(prepared[s : s + new_bs], new_bs) for s in range(0, len(prepared), new_bs)]
             return np.concatenate(outs, axis=0)
 
     def _store(chunk_idx: list[int], prepared: list, cur_bs: int) -> None:
@@ -491,7 +492,7 @@ def predict_batch(
         run_bs = min(cur_bs, len(live_prepared)) if len(live_prepared) < cur_bs else cur_bs
         _store(live_idx, live_prepared, run_bs)
 
-    if preprocess_workers == 1 or len(chunked_idx) < 2:
+    if preprocess_workers == 1:
         for chunk_idx, cur_bs in chunked_idx:
             prepared = [_prepare_one(orig) for orig in chunk_idx]
             predict_prepared(chunk_idx, prepared, cur_bs)
@@ -540,23 +541,57 @@ def _collect_paths(args: argparse.Namespace) -> list[Path]:
             raise ValueError("--data_dir argument with folder with input files needed")
         return sorted(Path(args.data_dir).glob("*.wav"))
     if args.mode == "predict_csv":
-        if args.csv_file is None:
-            raise ValueError("--csv_file argument with csv file name needed")
-        if args.csv_deg is None:
-            raise ValueError("--csv_deg argument with csv column name of the filenames needed")
-        data_dir = Path(args.data_dir or "")
-        csv_path = data_dir / args.csv_file
-        try:
-            df = pd.read_csv(csv_path)
-        except FileNotFoundError as exc:
-            raise ValueError(f"CSV file not found: {csv_path}") from exc
-        if args.csv_deg not in df.columns:
-            raise ValueError(
-                f"csv_deg column {args.csv_deg!r} not found in {csv_path}. "
-                f"Available columns: {list(df.columns)}"
-            )
-        return [data_dir / value for value in df[args.csv_deg].tolist()]
+        _, paths = _read_csv_input(args)
+        return paths
     raise NotImplementedError("--mode given not available")
+
+
+def _read_csv_input(args: argparse.Namespace) -> tuple[pd.DataFrame, list[Path]]:
+    """Read a legacy predict_csv input without changing its tabular contract."""
+    if args.csv_file is None:
+        raise ValueError("--csv_file argument with csv file name needed")
+    if args.csv_deg is None:
+        raise ValueError("--csv_deg argument with csv column name of the filenames needed")
+    data_dir = Path(args.data_dir or "")
+    csv_path = data_dir / args.csv_file
+    try:
+        df = pd.read_csv(csv_path)
+    except FileNotFoundError as exc:
+        raise ValueError(f"CSV file not found: {csv_path}") from exc
+    if args.csv_deg not in df.columns:
+        raise ValueError(
+            f"csv_deg column {args.csv_deg!r} not found in {csv_path}. " f"Available columns: {list(df.columns)}"
+        )
+    return df, [data_dir / value for value in df[args.csv_deg].tolist()]
+
+
+def _format_cli_results(
+    mode: str,
+    paths: Sequence[Path],
+    predictions: pd.DataFrame,
+    *,
+    csv_input: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    """Apply the original PyTorch CLI's output schema.
+
+    The programmatic batch API keeps resolved paths in ``deg``. The file and
+    directory CLI modes historically print basenames, while predict_csv keeps
+    every input column and filename value intact and appends prediction fields.
+    """
+    if mode == "predict_csv":
+        if csv_input is None:
+            raise ValueError("csv_input is required for predict_csv formatting")
+        if len(csv_input) != len(predictions):
+            raise ValueError(f"CSV row count {len(csv_input)} does not match prediction count {len(predictions)}")
+        result = csv_input.copy()
+        for column in predictions.columns:
+            if column != "deg":
+                result[column] = predictions[column].to_numpy(copy=True)
+        return result
+
+    result = predictions.copy()
+    result["deg"] = [path.name for path in paths]
+    return result
 
 
 def main(argv: Sequence[str] | None = None) -> None:
@@ -574,25 +609,43 @@ def main(argv: Sequence[str] | None = None) -> None:
     parser.add_argument("--cache_dir")
     parser.add_argument("--precision", choices=["float32", "bf16"], default="float32")
     parser.add_argument("--preprocess_workers", type=int, default=1)
-    parser.add_argument("--length_bucket", type=int, default=None,
-                        help="pad batch-max up to this grid (default: model-derived 32 self-att / 64 TTS; 1 = exact)")
-    parser.add_argument("--no_sort_by_length", action="store_true",
-                        help="disable stable length sort (use naive in-order batching)")
-    parser.add_argument("--on_error", choices=["raise", "collect"], default="raise",
-                        help="raise: abort batch on first bad file (default); "
-                             "collect: skip bad files, add an `error` column")
-    parser.add_argument("--auto_batch", action="store_true",
-                        help="on GPU OOM, halve batch_size and retry down to 1 (logs each reduction)")
-    parser.add_argument("--batch_mode", choices=["fixed", "cost_aware"], default="fixed",
-                        help="fixed (default): adjacent fixed-size chunks of --bs; "
-                             "cost_aware: bounded power-of-two batch sizes that isolate long "
-                             "outliers (reduces padded-compute cost on heavy-tailed lengths; "
-                             "requires length sort, scores identical to fixed)")
-    parser.add_argument("--prewarm", action="store_true",
-                        help="pre-compile the model's default length-bucket grid at --bs before "
-                             "predicting, so the first real batch of each grid shape hits the "
-                             "persistent cache. Grid: bucket-aligned doubling lengths up to "
-                             "max_segments (see default_prewarm_grid)")
+    parser.add_argument(
+        "--length_bucket",
+        type=int,
+        default=None,
+        help="pad batch-max up to this grid (default: model-derived 32 self-att / 64 TTS; 1 = exact)",
+    )
+    parser.add_argument(
+        "--no_sort_by_length", action="store_true", help="disable stable length sort (use naive in-order batching)"
+    )
+    parser.add_argument(
+        "--on_error",
+        choices=["raise", "collect"],
+        default="raise",
+        help="raise: abort batch on first bad file (default); " "collect: skip bad files, add an `error` column",
+    )
+    parser.add_argument(
+        "--auto_batch",
+        action="store_true",
+        help="on GPU OOM, halve batch_size and retry down to 1 (logs each reduction)",
+    )
+    parser.add_argument(
+        "--batch_mode",
+        choices=["fixed", "cost_aware"],
+        default="fixed",
+        help="fixed (default): adjacent fixed-size chunks of --bs; "
+        "cost_aware: bounded power-of-two batch sizes that isolate long "
+        "outliers (reduces padded-compute cost on heavy-tailed lengths; "
+        "requires length sort, scores identical to fixed)",
+    )
+    parser.add_argument(
+        "--prewarm",
+        action="store_true",
+        help="pre-compile the model's default length-bucket grid at --bs before "
+        "predicting, so the first real batch of each grid shape hits the "
+        "persistent cache. Grid: bucket-aligned doubling lengths up to "
+        "max_segments (see default_prewarm_grid)",
+    )
     args = parser.parse_args(argv)
 
     model = load_model(args.pretrained_model, device=args.device, cache_dir=args.cache_dir, precision=args.precision)
@@ -606,10 +659,14 @@ def main(argv: Sequence[str] | None = None) -> None:
         bucket = args.length_bucket if args.length_bucket is not None else default_length_bucket(model.config)
         grid = default_prewarm_grid(model.config, bucket)
         prewarm(model, [args.bs], grid, cache_dir=args.cache_dir)
-    paths = _collect_paths(args)
+    csv_input = None
+    if args.mode == "predict_csv":
+        csv_input, paths = _read_csv_input(args)
+    else:
+        paths = _collect_paths(args)
     if not paths:
         raise ValueError("No wav files found")
-    df = predict_batch(
+    predictions = predict_batch(
         model,
         paths,
         batch_size=args.bs,
@@ -621,6 +678,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         auto_batch=args.auto_batch,
         batch_mode=args.batch_mode,
     )
+    df = _format_cli_results(args.mode, paths, predictions, csv_input=csv_input)
     if args.output_dir:
         output_dir = Path(args.output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)

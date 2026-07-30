@@ -85,9 +85,9 @@ def test_prewarm_runs_and_populates_cache(tmp_path: Path) -> None:
     assert result["n_files"] > 0, "persistent cache empty after prewarm"
 
 
-def test_prewarm_rejects_invalid_sizes(tmp_path: Path) -> None:
+def test_prewarm_rejects_invalid_sizes() -> None:
     _skip_if_weights_missing()
-    model = load_model(MOS_ONLY_NPZ, device=default_test_device(), cache_dir=tmp_path / "c")
+    model = load_model(MOS_ONLY_NPZ, device=default_test_device())
     bl = default_length_bucket(model.config)
     with pytest.raises(ValueError, match="batch_sizes must be >= 1"):
         prewarm(model, [0], [bl])
@@ -95,10 +95,10 @@ def test_prewarm_rejects_invalid_sizes(tmp_path: Path) -> None:
         prewarm(model, [1], [0])
 
 
-def test_prewarm_then_predict_matches_cold(tmp_path: Path) -> None:
+def test_prewarm_then_predict_matches_cold() -> None:
     """Prewarm must not change numerical output vs a cold predict."""
     _skip_if_weights_missing()
-    model = load_model(MOS_ONLY_NPZ, device=default_test_device(), cache_dir=tmp_path / "c")
+    model = load_model(MOS_ONLY_NPZ, device=default_test_device())
     bl = default_length_bucket(model.config)
     x, n_wins = _synthetic(model, bs=2, steps=bl)
     cold = model.predict_segments(x, n_wins)  # compiles

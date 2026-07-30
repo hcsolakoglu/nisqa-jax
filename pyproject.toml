@@ -1,5 +1,6 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+# SPDX license expressions and `project.license-files` require setuptools 77+.
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -26,21 +27,23 @@ classifiers = [
   "Development Status :: 4 - Beta",
 ]
 dependencies = [
-  # Pin jax to the tested 0.4.x minor. JAX's compilation-cache config API churns
-  # across minors (e.g. `initialize_cache`/`is_initialized` were removed after
-  # 0.4.30); this repo uses the version-tolerant `jax_compilation_cache_dir`
-  # knob, but staying within 0.4.x avoids surprise breakage of the persistent
-  # cache and JIT behavior. Bump only after re-running the full parity suite.
-  "jax>=0.4.30,<0.5",
-  "numpy>=1.26,<2",
-  "scipy>=1.11",
-  "librosa>=0.10.2",
-  "pandas>=2.1",
-  "soundfile>=0.12",
+  # CI exercises the compatibility floor (0.4.30/NumPy 1.26) and the current
+  # tested stack (0.6.2/NumPy 2.2). Keep upper bounds below the next unqualified
+  # minor until its cache/JIT and audio-frontend behavior pass the full matrix.
+  "jax>=0.4.30,<0.7",
+  "numpy>=1.26,<2.3",
+  "scipy>=1.11,<2",
+  "librosa>=0.10.2,<0.11",
+  "pandas>=2.1,<3",
+  "soundfile>=0.12,<0.13",
 ]
 
 [project.optional-dependencies]
 convert = ["torch>=2.0"]
+# Convenience extra for editable/source installs on CUDA 12. The tested direct
+# dependency pins are in requirements-gpu.txt; transitive CUDA runtimes remain
+# resolver-managed, so that file is not a full lock.
+cuda12 = ["jax[cuda12]==0.6.2"]
 # `parity` adds torch for the live PyTorch parity tests (test_jax_port.py -m
 # parity). Those tests also require the source .tar checkpoints + the PyTorch
 # reference source repo on disk (see NISQA_SOURCE_WEIGHTS_DIR / PYTORCH_ROOT in

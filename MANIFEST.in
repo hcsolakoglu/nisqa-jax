@@ -10,6 +10,7 @@ include CITATION.cff
 include README.md
 include pyproject.toml
 include requirements-jax.txt
+include requirements-gpu.txt
 include JAX_INFERENCE_PORT_SPEC.md
 
 # CI + docs
@@ -18,8 +19,10 @@ recursive-include .github *.yml
 # Release tooling + artifact verifier
 recursive-include scripts *.py
 
-# Tests + shared utils + golden parity fixtures (self-contained CI gate)
-recursive-include tests *.py *.json *.npz
+# Tests + shared utils + golden/frontend fixtures (self-contained CI gate).
+# The frontend fixture stores compressed binary data as base64 text so it can
+# be reviewed and transported without special binary-patch handling.
+recursive-include tests *.py *.json *.npz *.b64
 
 # Bundled weight artifacts (in-package data; also included as package-data
 # in the wheel, but the sdist must carry them for editable/source installs).

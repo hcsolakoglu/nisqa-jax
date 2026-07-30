@@ -16,9 +16,7 @@ def _validate_channel(channel: int | None) -> None:
     # bool is a subclass of int; reject it so True/False are not silently treated
     # as channel 1/0. Floats (e.g. 0.0) are also rejected — a channel index is integral.
     if isinstance(channel, bool) or not isinstance(channel, int):
-        raise ValueError(
-            f"channel must be None or an int (not bool/float), got {channel!r} ({type(channel).__name__})"
-        )
+        raise ValueError(f"channel must be None or an int (not bool/float), got {channel!r} ({type(channel).__name__})")
 
 
 def load_melspec(file_path: str | Path, cfg: FeatureConfig, *, channel: int | None = None) -> np.ndarray:
@@ -74,6 +72,8 @@ def segment_melspec(
         raise ValueError(f"seg_length must be odd! (seg_lenth={cfg.seg_length})")
     if spec.ndim != 2:
         raise ValueError(f"Expected mel spectrogram [mels, frames], got shape {spec.shape}")
+    if cfg.seg_hop_length < 1:
+        raise ValueError(f"seg_hop_length must be >= 1, got {cfg.seg_hop_length}")
 
     n_wins_raw = spec.shape[1] - (cfg.seg_length - 1)
     if n_wins_raw < 1:
@@ -82,17 +82,21 @@ def segment_melspec(
             f"Consider zero padding the audio sample. File: {file_path}"
         )
 
-    idx = np.arange(cfg.seg_length)[None, :] + np.arange(n_wins_raw)[:, None]
-    segments = spec.T[idx, :].transpose(0, 2, 1)[:, None, :, :]
-    if cfg.seg_hop_length > 1:
-        segments = segments[:: cfg.seg_hop_length, :]
-    n_wins = int(np.ceil(n_wins_raw / cfg.seg_hop_length))
-
+    # Reject unsupported lengths before allocating the window index or copied
+    # segment tensor. For long audio, constructing every overlapping window
+    # first can exhaust host memory before this documented limit is reached.
+    n_wins = (n_wins_raw + cfg.seg_hop_length - 1) // cfg.seg_hop_length
     if cfg.max_segments < n_wins:
         raise ValueError(
             f"n_wins {n_wins} > max_length {cfg.max_segments} --- {file_path}. "
             "Increase max window length ms_max_segments!"
         )
+
+    # Construct only the hop-selected windows. Building all n_wins_raw windows
+    # and slicing afterward amplifies memory by seg_hop_length for no benefit.
+    starts = np.arange(0, n_wins_raw, cfg.seg_hop_length)
+    idx = starts[:, None] + np.arange(cfg.seg_length)[None, :]
+    segments = spec.T[idx, :].transpose(0, 2, 1)[:, None, :, :]
 
     # Reject non-finite mel-spectrograms with a path-bearing message: a corrupt
     # or all-silent WAV can yield NaN/Inf bins that would silently propagate to

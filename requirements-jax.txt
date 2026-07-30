@@ -1,29 +1,14 @@
-# CPU validation/runtime pins for the JAX inference port.
+# Tested CPU runtime pins for the JAX inference port.
 #
-# jax is pinned to the tested 0.4.30 minor (jax>=0.4.30,<0.5 in pyproject.toml).
-# JAX's compilation-cache config API churns across minors — e.g.
-# `jax.config.initialize_cache`/`is_initialized` were deprecated in 0.4.30 and
-# removed in newer releases; this repo uses the version-tolerant
-# `jax_compilation_cache_dir` knob, but staying within 0.4.x avoids surprise
-# breakage of the persistent cache and JIT behavior. Bump only after re-running
-# the full parity suite.
-#
-# ---- CPU install ----
-jax==0.4.30
-jaxlib==0.4.30
-# ---- NVIDIA GPU install ----
-# For CUDA deployment, replace the two lines above with the CUDA meta-package
-# (brings in the matching jaxlib + CUDA wheels). See:
-# https://docs.jax.dev/en/latest/installation.html
-#   jax[cuda12_pip]==0.4.30
-#   jaxlib==0.4.30
-numpy==1.26.4
-scipy==1.11.4
+# This is the current qualified CPU stack. CI separately retains the supported
+# compatibility floor (JAX/jaxlib 0.4.30 + NumPy 1.26.4).
+jax==0.6.2
+jaxlib==0.6.2
+numpy==2.2.6
+scipy==1.15.3
 librosa==0.10.2.post1
-pandas==2.1.4
+pandas==2.3.3
 soundfile==0.12.1
-pytest>=8
 
-# Optional: needed only to convert original PyTorch .tar checkpoints or run
-# PyTorch reference parity tests / bench_compare.
-# torch>=2.0
+# Development/test tooling and PyTorch are intentionally separate from the
+# runtime. Install `.[test]`, `.[convert]`, or `.[parity]` as needed.

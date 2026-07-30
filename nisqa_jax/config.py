@@ -62,6 +62,107 @@ def _tuple2(value: Any) -> tuple[int, int] | None:
     return int(value[0]), int(value[1])
 
 
+def _expect_arg(args: dict[str, Any], key: str, expected: Any, *, required: bool = True) -> None:
+    """Reject source-checkpoint arguments outside the shipped model profiles.
+
+    Some old callers construct a minimal args mapping rather than preserving
+    every training-only field. Optional fields are therefore checked whenever
+    present, while all arguments that affect the implemented inference graph or
+    audio frontend are required.
+    """
+    if key not in args:
+        if required:
+            raise NotImplementedError(f"Required shipped-checkpoint argument {key!r} is missing")
+        return
+    value = args[key]
+    if key.startswith("cnn_pool_") or key == "cnn_kernel_size":
+        value = tuple(value) if value is not None else None
+        expected = tuple(expected) if expected is not None else None
+    if value != expected:
+        raise NotImplementedError(
+            f"Unsupported {key}={args[key]!r}; the shipped JAX inference profile requires {expected!r}"
+        )
+
+
+def _validate_shipped_profile_args(
+    args: dict[str, Any],
+    combo: tuple[str, str, str, str],
+) -> None:
+    """Validate every fixed assumption made by the JAX kernels/frontend."""
+    is_tts = combo == ("NISQA", "standard", "lstm", "last_step_bi")
+    exact_common = {
+        "ms_sr": None,
+        "ms_n_fft": 4096,
+        "ms_hop_length": 0.01,
+        "ms_win_length": 0.02,
+        "ms_n_mels": 48,
+        "ms_seg_length": 15,
+        "cnn_c_out_1": 16,
+        "cnn_c_out_2": 32,
+        "cnn_c_out_3": 64,
+        "cnn_kernel_size": (3, 3),
+        "pool_output_size": 1,
+    }
+    for key, expected in exact_common.items():
+        # Shape-defining fields absent from legacy hand-built argument mappings
+        # are still enforced independently by the strict state/manifest audit.
+        _expect_arg(args, key, expected, required=key.startswith("ms_"))
+
+    exact: dict[str, Any]
+    if is_tts:
+        exact = {
+            "ms_fmax": 8000,
+            "ms_seg_hop_length": 1,
+            "ms_max_segments": 6000,
+            "cnn_pool_1": None,
+            "cnn_pool_2": None,
+            "cnn_pool_3": None,
+            "cnn_fc_out_h": 20,
+            "td_lstm_h": 128,
+            "td_lstm_num_layers": 1,
+            "td_lstm_bidirectional": True,
+            "td_sa_d_model": None,
+            "td_sa_num_layers": None,
+            "td_sa_h": None,
+            "td_sa_pos_enc": None,
+            "pool_att_h": None,
+        }
+    else:
+        exact = {
+            "ms_fmax": 20000,
+            "ms_seg_hop_length": 4,
+            "ms_max_segments": 1300,
+            "cnn_pool_1": (24, 7),
+            "cnn_pool_2": (12, 5),
+            "cnn_pool_3": (6, 3),
+            "cnn_fc_out_h": None,
+            "td_sa_d_model": 64,
+            "td_sa_nhead": 1,
+            "td_sa_num_layers": 2,
+            "td_sa_h": 64,
+            "td_sa_pos_enc": False,
+            "td_lstm_h": None,
+            "td_lstm_num_layers": None,
+            "td_lstm_bidirectional": None,
+            "pool_att_h": 128,
+        }
+    for key, expected in exact.items():
+        # Existing programmatic callers may omit inactive/training-only knobs.
+        # Active graph and frontend fields are always required.
+        active_graph_fields = (
+            {
+                "cnn_fc_out_h",
+                "td_lstm_h",
+                "td_lstm_num_layers",
+                "td_lstm_bidirectional",
+            }
+            if is_tts
+            else {"td_sa_d_model", "td_sa_nhead", "td_sa_num_layers", "td_sa_h"}
+        )
+        required = key.startswith("ms_") or key.startswith("cnn_pool_") or key in active_graph_fields
+        _expect_arg(args, key, expected, required=required)
+
+
 # The full set of (model, cnn_model, td, pool) architecture combinations the
 # JAX port implements. Used both at conversion time (reject unsupported source
 # checkpoints) and at load time (reject tampered/unsupported converted metadata).
@@ -126,22 +227,75 @@ def validate_model_config(cfg: ModelConfig) -> None:
     unknown = [n for n in cfg.output_names if n not in _KNOWN_OUTPUT_NAMES]
     if unknown:
         raise ValueError(f"Loaded artifact has unknown output names {unknown!r}")
+    is_tts = combo == ("NISQA", "standard", "lstm", "last_step_bi")
+    expected_feature = (
+        FeatureConfig(
+            sr=None,
+            n_fft=4096,
+            hop_length_seconds=0.01,
+            win_length_seconds=0.02,
+            n_mels=48,
+            fmax=8000,
+            seg_length=15,
+            seg_hop_length=1,
+            max_segments=6000,
+        )
+        if is_tts
+        else FeatureConfig(
+            sr=None,
+            n_fft=4096,
+            hop_length_seconds=0.01,
+            win_length_seconds=0.02,
+            n_mels=48,
+            fmax=20000,
+            seg_length=15,
+            seg_hop_length=4,
+            max_segments=1300,
+        )
+    )
+    if cfg.feature != expected_feature:
+        raise ValueError(
+            f"Loaded artifact feature config {cfg.feature!r} does not match the exact shipped "
+            f"profile {expected_feature!r}"
+        )
+    expected_pools = (None, None, None) if is_tts else ((24, 7), (12, 5), (6, 3))
+    actual_pools = (cfg.cnn_pool_1, cfg.cnn_pool_2, cfg.cnn_pool_3)
+    if actual_pools != expected_pools:
+        raise ValueError(
+            f"Loaded artifact CNN pools {actual_pools!r} do not match the exact shipped "
+            f"profile {expected_pools!r}"
+        )
     # td-specific field consistency (mirrors the source-args audit).
     if cfg.td == "self_att":
-        if cfg.td_sa_nhead not in (None, 1):
-            raise ValueError(f"Loaded self_att artifact has td_sa_nhead={cfg.td_sa_nhead!r} (!= 1)")
-        if not isinstance(cfg.td_sa_num_layers, int) or cfg.td_sa_num_layers < 1:
-            raise ValueError(f"Loaded self_att artifact has invalid td_sa_num_layers={cfg.td_sa_num_layers!r}")
-        if not isinstance(cfg.td_sa_d_model, int) or cfg.td_sa_d_model < 1:
-            raise ValueError(f"Loaded self_att artifact has invalid td_sa_d_model={cfg.td_sa_d_model!r}")
+        attention_profile = (
+            cfg.td_sa_d_model,
+            cfg.td_sa_nhead,
+            cfg.td_sa_num_layers,
+            cfg.td_sa_h,
+            cfg.td_lstm_h,
+            cfg.td_lstm_bidirectional,
+        )
+        expected_attention = (64, 1, 2, 64, None, None)
+        if attention_profile != expected_attention:
+            raise ValueError(
+                f"Loaded self_att artifact profile {attention_profile!r} does not match the "
+                f"exact shipped profile {expected_attention!r}"
+            )
     elif cfg.td == "lstm":
-        # td_lstm_num_layers is not stored on ModelConfig (it is always 1 for the
-        # implemented path); the structural proxy is td_lstm_bidirectional + a
-        # positive td_lstm_h, both enforced at conversion. Reject if absent here.
-        if not cfg.td_lstm_bidirectional:
-            raise ValueError(f"Loaded lstm artifact has td_lstm_bidirectional={cfg.td_lstm_bidirectional!r}")
-        if not isinstance(cfg.td_lstm_h, int) or cfg.td_lstm_h < 1:
-            raise ValueError(f"Loaded lstm artifact has invalid td_lstm_h={cfg.td_lstm_h!r}")
+        lstm_profile = (
+            cfg.td_lstm_h,
+            cfg.td_lstm_bidirectional,
+            cfg.td_sa_d_model,
+            cfg.td_sa_nhead,
+            cfg.td_sa_num_layers,
+            cfg.td_sa_h,
+        )
+        expected_lstm = (128, True, None, None, None, None)
+        if lstm_profile != expected_lstm:
+            raise ValueError(
+                f"Loaded lstm artifact profile {lstm_profile!r} does not match the exact "
+                f"shipped profile {expected_lstm!r}"
+            )
 
 
 def config_from_checkpoint_args(args: dict[str, Any], source_path: Path, sha256: str) -> ModelConfig:
@@ -230,6 +384,11 @@ def config_from_checkpoint_args(args: dict[str, Any], source_path: Path, sha256:
             f"cnn_fc_out_h={args.get('cnn_fc_out_h')!r} is set on an adapt-CNN checkpoint, but "
             "the adapt path has no fc_out head; this configuration is not supported"
         )
+
+    # After the general unsupported-path checks above have emitted their more
+    # specific diagnostics, enforce the exact dimensions/frontend settings of
+    # the three shipped profiles.
+    _validate_shipped_profile_args(args, combo_typed)
 
     # Output naming is derived from the model IDENTITY (the validated architecture
     # combo), NOT the checkpoint filename. See ``derive_output_names`` for the
