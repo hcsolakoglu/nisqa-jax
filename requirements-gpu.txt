@@ -8,6 +8,6 @@
 jax[cuda12]==0.6.2
 numpy==2.2.6
 scipy==1.15.3
-librosa==0.10.2.post1
+librosa==0.11.0
 pandas==2.3.3
-soundfile==0.12.1
+soundfile==0.14.0
