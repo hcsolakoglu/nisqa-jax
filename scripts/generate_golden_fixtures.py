@@ -103,7 +103,9 @@ def _capture_ptref(
         print(f"  (skip ptref: {exc})")
         return None
 
-    ck = torch.load(tar, map_location="cpu")
+    from nisqa_jax.checkpoint import _load_torch_checkpoint
+
+    ck = _load_torch_checkpoint(torch, tar)
     args = ck["args"]
     cls = {"NISQA": nl.NISQA, "NISQA_DIM": nl.NISQA_DIM}[args["model"]]
     # Reuse the port's arg-mapping to build the model constructor kwargs.

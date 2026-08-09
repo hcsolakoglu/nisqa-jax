@@ -92,16 +92,22 @@ jobs:
             numpy: "1.26.4"
             scipy: "1.11.4"
             pandas: "2.1.4"
+            librosa: "0.10.2.post1"
+            soundfile: "0.12.1"
           - name: intermediate-jax-0.5
             jax: "0.5.3"
             numpy: "2.2.6"
             scipy: "1.15.3"
             pandas: "2.3.3"
+            librosa: "0.10.2.post1"
+            soundfile: "0.12.1"
           - name: current-jax-0.6
             jax: "0.6.2"
             numpy: "2.2.6"
             scipy: "1.15.3"
             pandas: "2.3.3"
+            librosa: "0.10.2.post1"
+            soundfile: "0.12.1"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
@@ -117,8 +123,8 @@ jobs:
             "numpy==${{ matrix.stack.numpy }}" \
             "scipy==${{ matrix.stack.scipy }}" \
             "pandas==${{ matrix.stack.pandas }}" \
-            "librosa==0.10.2.post1" \
-            "soundfile==0.12.1"
+            "librosa==${{ matrix.stack.librosa }}" \
+            "soundfile==${{ matrix.stack.soundfile }}"
           pip check
       - name: Artifact checksum + manifest + metadata verification (strict)
         run: python scripts/verify_artifacts.py --strict

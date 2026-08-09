@@ -53,6 +53,12 @@ from pathlib import Path
 
 import numpy as np
 
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from nisqa_jax_metadata import canonical_metadata_checksum  # noqa: E402
+
 CHECKSUMS_FILENAME = "CHECKSUMS.sha256"
 
 # Required top-level fields in each .json metadata sidecar.
@@ -79,6 +85,7 @@ _REQUIRED_MODEL_CONFIG_KEYS = (
 )
 # Current conversion version the loader expects (must match checkpoint.py).
 _EXPECTED_CONVERSION_VERSION = 4
+_HEX_DIGITS = frozenset("0123456789abcdefABCDEF")
 
 
 def _sha256(path: Path) -> str:
@@ -87,6 +94,10 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: f.read(1024 * 1024), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+def _is_sha256_hex(value: object) -> bool:
+    return isinstance(value, str) and len(value) == 64 and all(char in _HEX_DIGITS for char in value)
 
 
 def _default_weights_dir() -> Path:
@@ -123,7 +134,7 @@ def _load_checksums(weights_dir: Path) -> dict[str, str]:
             continue
         # sha256sum format: "<64-hex>  <filename>" (two spaces, binary/text marker).
         digest, _, name = line.partition("  ")
-        if len(digest) != 64:
+        if not _is_sha256_hex(digest):
             raise ValueError(f"Malformed checksum line in {sums_file}: {line!r}")
         out[name.strip()] = digest
     return out
@@ -208,7 +219,7 @@ def _check_metadata(npz: Path, metadata: dict, recomputed_npz_sha: str, *, stric
         )
     # npz_sha256 must match the recomputed hash (independent of CHECKSUMS).
     embedded_sha = metadata.get("npz_sha256")
-    if not isinstance(embedded_sha, str) or len(embedded_sha) != 64:
+    if not isinstance(embedded_sha, str) or not _is_sha256_hex(embedded_sha):
         errors.append(f"  {json_path.name} npz_sha256 is not a 64-hex string: {embedded_sha!r}")
     elif embedded_sha != recomputed_npz_sha:
         errors.append(
@@ -261,8 +272,13 @@ def _check_metadata(npz: Path, metadata: dict, recomputed_npz_sha: str, *, stric
             errors.append(msg)
         else:
             print(f"warning:{msg}", file=sys.stderr)
-    elif not isinstance(meta_sha, str) or len(meta_sha) != 64:
+    elif not isinstance(meta_sha, str) or not _is_sha256_hex(meta_sha):
         errors.append(f"  {json_path.name} metadata_sha256 is not a 64-hex string: {meta_sha!r}")
+    elif (actual := canonical_metadata_checksum(metadata)) != meta_sha:
+        errors.append(
+            f"  {json_path.name} canonical metadata checksum does not match "
+            f"'metadata_sha256': expected {meta_sha[:12]}… got {actual[:12]}…"
+        )
     return errors
 
 

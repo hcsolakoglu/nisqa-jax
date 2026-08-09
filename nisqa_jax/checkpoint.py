@@ -11,6 +11,8 @@ from typing import Any, Sequence
 import jax
 import numpy as np
 
+from nisqa_jax_metadata import canonical_metadata_checksum
+
 from .config import (
     FeatureConfig,
     ModelConfig,
@@ -76,38 +78,6 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: f.read(1024 * 1024), b""):
             h.update(chunk)
     return h.hexdigest()
-
-
-# Fields excluded from the canonical metadata checksum: the two file-reference
-# hashes are not part of the semantic metadata (npz_sha256 pins the .npz bytes;
-# metadata_sha256 is this checksum itself — including it would be circular).
-_CANONICAL_HASH_EXCLUDED_FIELDS: frozenset[str] = frozenset({"npz_sha256", "metadata_sha256"})
-
-
-def canonical_metadata_checksum(metadata: dict[str, Any]) -> str:
-    """Deterministic SHA-256 of an artifact's semantic metadata payload.
-
-    The canonical form is ``json.dumps(metadata, sort_keys=True, separators=(",", ":"))``
-    over a copy of ``metadata`` with the file-reference hash fields
-    (``npz_sha256``, ``metadata_sha256``) removed. This is:
-
-      * **Stable** — independent of pretty-printing/whitespace, so re-serializing
-        the same logical metadata yields the same digest.
-      * **Non-circular** — the checksum never covers itself (``metadata_sha256``
-        is stripped before hashing), so embedding it in the JSON is safe and
-        verifiable by recomputing over the stripped payload.
-      * **Externally verifiable** — a release ``CHECKSUMS`` manifest can list the
-        raw ``.json`` file SHA-256 (catches any byte change) AND/OR this canonical
-        digest (catches semantic changes regardless of formatting). The loader
-        itself cross-checks ``npz_sha256`` (JSON) against the ``.npz`` file for
-        internal JSON<->NPZ consistency.
-
-    Older artifacts (pre-``metadata_sha256``) lack this field; the loader warns
-    (not fails) for backward compatibility, matching the ``npz_sha256`` policy.
-    """
-    payload = {k: v for k, v in metadata.items() if k not in _CANONICAL_HASH_EXCLUDED_FIELDS}
-    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def _torch() -> Any:

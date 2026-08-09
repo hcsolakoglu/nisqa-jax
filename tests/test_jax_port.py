@@ -21,7 +21,12 @@ SOURCE_WEIGHTS_ROOT = Path(os.environ.get("NISQA_SOURCE_WEIGHTS_DIR", PYTORCH_RO
 
 sys.path.insert(0, str(ROOT))
 
-from nisqa_jax.checkpoint import convert_checkpoint, load_converted_checkpoint, load_model  # noqa: E402
+from nisqa_jax.checkpoint import (  # noqa: E402
+    _load_torch_checkpoint,
+    convert_checkpoint,
+    load_converted_checkpoint,
+    load_model,
+)
 from nisqa_jax.features import preprocess_file, segment_melspec  # noqa: E402
 from nisqa_jax.predict import predict_batch, predict_file  # noqa: E402
 from _testutil import default_test_device  # noqa: E402
@@ -126,7 +131,7 @@ def _model_args(args: dict) -> dict:
 
 def _torch_model(checkpoint: Path):
     torch, nl, _ = _require_torch_reference()
-    ck = torch.load(checkpoint, map_location="cpu")
+    ck = _load_torch_checkpoint(torch, checkpoint)
     args = ck["args"]
     cls = {"NISQA": nl.NISQA, "NISQA_DIM": nl.NISQA_DIM}[args["model"]]
     model = cls(**_model_args(args))
