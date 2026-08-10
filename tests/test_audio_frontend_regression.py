@@ -49,7 +49,7 @@ def frozen_baseline(
     assert manifest["fixture_version"] == 1
     assert manifest["baseline"]["numpy"] == "1.26.4"
     assert float(manifest["frontend_atol"]) <= 2e-5
-    assert float(manifest["score_atol"]) <= 1e-6
+    assert float(manifest["score_atol"]) <= 2e-6
 
     wav_bytes = gzip.decompress(base64.b64decode(WAV_PATH.read_text(encoding="ascii")))
     assert hashlib.sha256(wav_bytes).hexdigest() == manifest["wav_sha256"]

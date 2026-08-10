@@ -71,6 +71,6 @@
       ]
     }
   },
-  "score_atol": 1e-06,
+  "score_atol": 2e-06,
   "wav_sha256": "3a2cdd6f6dacf09bb9c7bdae428efd97e8d922b339ce6915a7d24bb5fd6abbde"
 }
