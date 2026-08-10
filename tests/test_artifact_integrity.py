@@ -367,6 +367,34 @@ def test_verifier_strict_requires_metadata_sha256(tmp_path: Path) -> None:
     assert "metadata_sha256" in out
 
 
+def test_verifier_strict_rejects_tampered_metadata_hash(tmp_path: Path) -> None:
+    """Strict mode must recompute and reject a forged canonical metadata hash."""
+    from nisqa_jax.checkpoint import _sha256
+
+    wdir = _copy_weights_to_tmp(tmp_path)
+    js = wdir / "nisqa_mos_only.json"
+    meta = _load_metadata(js)
+    meta["metadata_sha256"] = "0" * 64
+    _save_metadata(js, meta)
+
+    # Keep the raw JSON checksum consistent so this isolates the canonical
+    # metadata checksum gate rather than failing at the byte-level manifest.
+    sums = (wdir / "CHECKSUMS.sha256").read_text()
+    lines = []
+    for line in sums.splitlines():
+        if line.strip() and not line.startswith("#") and line.endswith("nisqa_mos_only.json"):
+            _digest, _, name = line.partition("  ")
+            lines.append(f"{_sha256(js)}  {name.strip()}")
+        else:
+            lines.append(line)
+    (wdir / "CHECKSUMS.sha256").write_text("\n".join(lines) + "\n")
+
+    rc, out, err = _run_verifier(wdir, "--strict")
+    assert rc != 0, "strict verifier must reject a forged metadata_sha256"
+    assert "canonical metadata checksum does not match" in out
+    assert err
+
+
 def test_verifier_non_strict_warns_on_missing_metadata_sha256(tmp_path: Path) -> None:
     """Non-strict mode must warn (not fail) on missing metadata_sha256."""
     from nisqa_jax.checkpoint import _sha256

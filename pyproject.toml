@@ -69,6 +69,12 @@ Changelog = "https://github.com/hcsolakoglu/nisqa-jax/blob/main/CHANGELOG.md"
 [project.scripts]
 nisqa-jax = "nisqa_jax.predict:main"
 
+# The release verifier and runtime loader share this stdlib-only checksum
+# module. Keeping it as a standalone module lets verifier scripts import the
+# exact runtime algorithm without importing JAX through nisqa_jax.__init__.
+[tool.setuptools]
+py-modules = ["nisqa_jax_metadata"]
+
 [tool.setuptools.packages.find]
 include = ["nisqa_jax*"]
 

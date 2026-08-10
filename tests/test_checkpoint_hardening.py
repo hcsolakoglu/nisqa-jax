@@ -18,6 +18,7 @@ Covers the checkpoint-lane hardening:
 
 from __future__ import annotations
 
+import ast
 import json
 import os
 import shutil
@@ -50,6 +51,28 @@ from nisqa_jax.checkpoint import (  # noqa: E402
 )
 from nisqa_jax.checkpoint import _torch_version_lt  # noqa: E402
 from nisqa_jax.config import ModelConfig  # noqa: E402
+
+
+@pytest.mark.parametrize(
+    "relative_path",
+    ["scripts/generate_golden_fixtures.py", "tests/test_jax_port.py"],
+)
+def test_reference_tools_use_the_safe_checkpoint_loader(relative_path: str) -> None:
+    """Maintainer/reference paths must not reintroduce direct unsafe torch.load."""
+    path = ROOT / relative_path
+    source = path.read_text()
+    tree = ast.parse(source, filename=str(path))
+    direct_loads = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "torch"
+        and node.func.attr == "load"
+    ]
+    assert not direct_loads, f"{relative_path} contains a direct torch.load call"
+    assert "_load_torch_checkpoint" in source
 
 
 def _skip_if_weights_missing() -> None:

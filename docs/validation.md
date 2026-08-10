@@ -8,7 +8,7 @@ model numerics, artifacts, packaging, and GPU execution fail independently.
 ```bash
 python -m venv .venv-verify
 . .venv-verify/bin/activate
-python -m pip install --upgrade pip
+python -m pip install --upgrade "pip==26.1.2"
 python -m pip install -r requirements-jax.txt
 python -m pip install -e ".[test]"
 python -m pip install \
@@ -27,7 +27,7 @@ JAX_PLATFORMS=cpu python -m pytest -q
 python -m build
 python -m pytest -q tests/test_build_contents.py
 python -m pip check
-python -m pip_audit --local --progress-spinner off
+python -m pip_audit -r requirements-jax.txt --progress-spinner off
 ```
 
 What each gate proves:
@@ -67,6 +67,11 @@ All stacks run across Python 3.10, 3.11, and 3.12. A dependency-range change is
 incomplete until the matrix, exact CPU/GPU requirements, clean-room build,
 frontend baseline, and README agree.
 
+The current release-candidate audio baseline is ``librosa==0.10.2.post1`` and
+``soundfile==0.12.1`` across all CPU matrix cells and the direct CUDA pins. The
+open upgrade to librosa 0.11.0 and soundfile 0.14.0 is intentionally not part of
+this candidate until it has its own full frontend, CPU, and CUDA qualification.
+
 ## CUDA qualification
 
 Use a separate environment:
@@ -74,7 +79,7 @@ Use a separate environment:
 ```bash
 python -m venv .venv-gpu
 . .venv-gpu/bin/activate
-python -m pip install --upgrade pip
+python -m pip install --upgrade "pip==26.1.2"
 python -m pip install -r requirements-gpu.txt
 python -m pip install -e ".[test]"
 python -c 'import jax; print(jax.devices()); assert any(d.platform == "gpu" for d in jax.devices())'
@@ -82,7 +87,7 @@ JAX_PLATFORMS=cuda python -m pytest -q tests/test_golden_parity.py
 JAX_PLATFORMS=cuda python -m pytest -q
 python -m pip check
 python -m pip install "pip-audit==2.9.0"
-python -m pip_audit --local --progress-spinner off
+python -m pip_audit -r requirements-gpu.txt --progress-spinner off
 ```
 
 Before a release claims CUDA support, also verify:

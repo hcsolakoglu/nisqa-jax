@@ -65,6 +65,7 @@ _REQUIRED_WHEEL_WEIGHTS = [
 # Required wheel code modules.
 _REQUIRED_WHEEL_CODE = [
     "nisqa_jax/__init__.py",
+    "nisqa_jax_metadata.py",
     "nisqa_jax/model.py",
     "nisqa_jax/checkpoint.py",
     "nisqa_jax/config.py",
@@ -74,6 +75,7 @@ _REQUIRED_WHEEL_CODE = [
 ]
 # Required sdist-only files (tests, scripts, golden, docs, CI).
 _REQUIRED_SDIST_FILES = [
+    "nisqa_jax_metadata.py",
     "scripts/verify_artifacts.py",
     "scripts/generate_golden_fixtures.py",
     "tests/_testutil.py",
