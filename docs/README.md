@@ -9,8 +9,8 @@ start. These guides define the maintainer-facing contracts:
   batching, and persistent-cache operation.
 - [Validation](validation.md): local gates, compatibility matrices, CUDA
   qualification, live PyTorch parity, and benchmark evidence.
-- [Benchmarks](benchmarks/README.md): measurement policy, commands, required
-  evidence, and retained historical results.
+- [Benchmarks](benchmarks/README.md): measurement policy, bounded Hugging Face
+  real-data comparison, current results, and retained historical results.
 - [Releasing](releasing.md): versioning, build, artifact, documentation, and
   publication checklist.
 

@@ -15,11 +15,19 @@ versioning for published releases.
   3.10–3.12.
 - Architecture, validation, release, contribution, and security documentation.
 - A pinned dependency-vulnerability audit gate for the resolved current stack.
+- A bounded Hugging Face real-audio benchmark with streamed sample manifests,
+  live PyTorch comparison, CPU correctness checks, CUDA diagnostics, and
+  cProfile output.
 
 ### Changed
 
 - Current direct pins now use JAX/jaxlib 0.6.2, NumPy 2.2.6, SciPy 1.15.3,
   and pandas 2.3.3 while retaining the documented compatibility floor.
+- The qualified audio runtime baseline is now librosa 0.11.0 and soundfile
+  0.14.0. Cross-platform frozen-score tolerance is explicitly bounded at
+  `2e-6`.
+- The audio frontend caches mel filter banks by resolved frontend parameters;
+  frozen frontend arrays and CPU PyTorch parity remain unchanged.
 - GitHub Actions use immutable checkout 7.0.1 and setup-python 7.0.0 SHAs.
 - Dependabot groups coupled runtime and GitHub Actions updates.
 - Packaging and clean-room tests verify all required artifacts, fixtures,

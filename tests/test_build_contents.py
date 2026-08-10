@@ -78,6 +78,7 @@ _REQUIRED_SDIST_FILES = [
     "nisqa_jax_metadata.py",
     "scripts/verify_artifacts.py",
     "scripts/generate_golden_fixtures.py",
+    "scripts/benchmark_hf_real.py",
     "tests/_testutil.py",
     "tests/test_jax_port.py",
     "tests/test_validation.py",
@@ -85,6 +86,7 @@ _REQUIRED_SDIST_FILES = [
     "tests/test_prewarm.py",
     "tests/test_golden_parity.py",
     "tests/test_audio_frontend_regression.py",
+    "tests/test_benchmark_hf_real.py",
     "tests/test_build_contents.py",
     "tests/fixtures/audio_frontend_regression.json",
     "tests/fixtures/audio_frontend_regression.npz.b64",
@@ -113,6 +115,9 @@ _REQUIRED_SDIST_FILES = [
     "docs/architecture.md",
     "docs/backends.md",
     "docs/benchmarks/README.md",
+    "docs/benchmarks/results/hf-minds14-2k.json",
+    "docs/benchmarks/results/hf-minds14-2k.baseline.json",
+    "docs/benchmarks/results/hf-minds14-2k-optimization.md",
     "docs/benchmarks/historical/README.md",
     "docs/benchmarks/historical/jax-0.4.30-eager-results.json",
     "docs/benchmarks/historical/jax-0.4.30-optimized-pytorch.txt",
@@ -123,6 +128,7 @@ _REQUIRED_SDIST_FILES = [
     "CITATION.cff",
     "requirements-jax.txt",
     "requirements-gpu.txt",
+    "requirements-benchmark.txt",
     "nisqa_jax/weights/LICENSE_model_weights",
 ]
 

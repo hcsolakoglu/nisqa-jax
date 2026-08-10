@@ -1,0 +1,49 @@
+profile_seconds=21.739959
+sample_count=64
+
+         1129318 function calls (1121154 primitive calls) in 21.703 seconds
+
+   Ordered by: cumulative time
+   List reduced from 1594 to 40 due to restriction <40>
+
+   ncalls  tottime  percall  cumtime  percall filename:lineno(function)
+    328/5    0.000    0.000   16.657    3.331 traceback_util.py:178(reraise_with_filtered_traceback)
+    288/5    0.001    0.000   16.657    3.331 pjit.py:285(cache_miss)
+    288/5    0.002    0.000   16.594    3.319 pjit.py:138(_python_pjit_helper)
+      2/1    0.567    0.284   16.321   16.321 benchmark_hf_real.py:495(_run_engine)
+        5    0.000    0.000   16.302    3.260 pjit.py:1822(_pjit_call_impl_python)
+        5    0.000    0.000   15.986    3.197 pxla.py:2405(compile)
+        5    0.001    0.000   15.986    3.197 pxla.py:2895(from_hlo)
+        5    0.000    0.000   15.402    3.080 pxla.py:2725(_cached_compilation)
+        5    0.139    0.028   15.400    3.080 compiler.py:419(compile_or_get_cached)
+  263/113    0.002    0.000   12.789    0.113 profiler.py:351(wrapper)
+        5    0.000    0.000   12.083    2.417 compiler.py:758(_compile_and_write_cache)
+        5   12.081    2.416   12.082    2.416 compiler.py:326(backend_compile_and_load)
+       31    0.000    0.000    4.326    0.140 benchmark_hf_real.py:539(submit)
+       64    0.000    0.000    4.326    0.068 benchmark_hf_real.py:621(_preprocess_timed)
+       64    0.000    0.000    4.325    0.068 features.py:119(preprocess_file)
+       64    0.002    0.000    4.208    0.066 features.py:22(load_melspec)
+       64    0.001    0.000    4.081    0.064 spectral.py:2013(melspectrogram)
+        1    0.000    0.000    3.173    3.173 threading.py:637(wait)
+        1    0.000    0.000    3.173    3.173 threading.py:323(wait)
+        7    3.173    0.453    3.173    0.453 {method 'acquire' of '_thread.lock' objects}
+       64    0.602    0.009    2.909    0.045 spectrum.py:2863(_spectrogram)
+       64    1.349    0.021    2.307    0.036 spectrum.py:54(stft)
+       64    0.001    0.000    1.114    0.017 einsumfunc.py:1057(einsum)
+       64    1.106    0.017    1.107    0.017 numeric.py:968(tensordot)
+     3677    0.004    0.000    0.904    0.000 _backend.py:18(__ua_function__)
+     3677    0.002    0.000    0.897    0.000 _basic_backend.py:89(rfft)
+     3677    0.006    0.000    0.894    0.000 _basic_backend.py:27(_execute_1D)
+     3677    0.012    0.000    0.873    0.000 basic.py:40(r2c)
+     3677    0.838    0.000    0.838    0.000 {built-in method scipy.fft._pocketfft.pypocketfft.r2c}
+        5    0.581    0.116    0.581    0.116 pxla.py:2635(_get_layouts_from_executable)
+   150/25    0.002    0.000    0.386    0.015 partial_eval.py:2272(trace_to_jaxpr_dynamic)
+   150/25    0.000    0.000    0.380    0.015 linear_util.py:209(call_wrapped)
+   150/25    0.001    0.000    0.380    0.015 linear_util.py:394(_get_result_paths_thunk)
+        5    0.000    0.000    0.355    0.071 pjit.py:1804(_resolve_and_lower)
+        5    0.000    0.000    0.351    0.070 pjit.py:1929(_pjit_lower)
+        5    0.000    0.000    0.351    0.070 pjit.py:1934(_pjit_lower_cached)
+        5    0.001    0.000    0.351    0.070 pxla.py:2163(lower_sharding_computation)
+        5    0.000    0.000    0.330    0.066 pxla.py:1847(_cached_lowering_to_hlo)
+        5    0.002    0.000    0.329    0.066 mlir.py:1156(lower_jaxpr_to_module)
+     55/5    0.004    0.000    0.316    0.063 mlir.py:1441(lower_jaxpr_to_fun)

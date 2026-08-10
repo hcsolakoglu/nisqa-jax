@@ -133,5 +133,19 @@ Every performance report must include:
 - synchronization method and aggregation statistic;
 - raw machine-readable output.
 
-Use `nisqa_jax.bench_compare` for hash-bound model-forward comparison and
-`nisqa_jax.bench` for JAX-only or end-to-end preprocessing measurements.
+Use `nisqa_jax.bench_compare` for hash-bound model-forward comparison,
+`nisqa_jax.bench` for JAX-only or end-to-end preprocessing measurements, and
+`scripts/benchmark_hf_real.py` for the current bounded real-data comparison.
+The committed result is
+[`docs/benchmarks/results/hf-minds14-2k.json`](benchmarks/results/hf-minds14-2k.json).
+It uses two thousand valid variable-duration Minds14 examples, records the
+resolved Hub revision and shard sizes, compares all shipped models against the
+upstream PyTorch implementation, and stores CPU correctness plus CUDA
+diagnostic metrics separately. On the committed run, all three CPU comparisons
+passed with maximum absolute differences below `2.9e-6` at a `5e-5` threshold.
+CUDA outputs were finite and shape-equal but exceeded that strict diagnostic
+threshold because of expected backend-specific LSTM accumulation drift. The
+corpus is not MOS-labelled, so this gate proves runtime and numerical parity
+only, not perceptual-quality accuracy. The before/after frontend optimization
+analysis is in
+[`benchmarks/results/hf-minds14-2k-optimization.md`](benchmarks/results/hf-minds14-2k-optimization.md).

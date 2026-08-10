@@ -18,7 +18,7 @@ contract and fail validation when encountered.
 
 ```text
 audio path
-  -> Librosa/SoundFile decode and mel spectrogram on host
+  -> Librosa/SoundFile decode and cached-mel-basis spectrogram on host
   -> checkpoint-specific overlapping segment extraction
   -> length estimation, stable sorting, chunking, and bucket padding
   -> explicit device placement
@@ -44,6 +44,7 @@ for each sample.
 | `nisqa_jax/predict.py` | File/batch APIs, CLI modes, error collection, length-aware scheduling, and OOM retry |
 | `nisqa_jax/bench.py` | JAX-only synthetic or end-to-end benchmark |
 | `nisqa_jax/bench_compare.py` | Hash-bound JAX/PyTorch model-forward comparison |
+| `scripts/benchmark_hf_real.py` | Bounded Hugging Face streaming, real-audio framework benchmark, parity, and profiling |
 | `nisqa_jax/weights/` | Bundled artifacts, sidecar metadata, checksums, and model-weight license |
 
 The package avoids a mandatory Flax or PyTorch dependency. Parameters are

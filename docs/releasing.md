@@ -28,6 +28,9 @@ Run the full process in [validation.md](validation.md), including:
 - `pip check` plus the pinned `pip-audit` gate on the resolved CPU and CUDA
   environments;
 - CUDA qualification when CUDA support is claimed.
+- The current two-thousand-sample real-data benchmark and CPU PyTorch
+  correctness result under `docs/benchmarks/results/` when performance claims are
+  changed.
 
 Do not waive a failed gate because a smoke test passed. If hosted CI cannot
 execute, restore it and obtain a green run before publishing.

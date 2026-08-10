@@ -158,13 +158,25 @@ for compatibility, packaging, vulnerability-audit, clean-room, and CUDA gates.
 
 ## Performance evidence
 
-The current JAX 0.6.2 implementation has correctness and CUDA smoke evidence,
-but no committed full post-optimization comparison grid. The project therefore
-makes no current universal speedup claim.
+The current JAX 0.6.2 implementation has CPU matrix, CUDA, artifact, and
+clean-room qualification. A reproducible two-thousand-sample real-audio
+comparison against the upstream PyTorch checkpoints is committed in
+[`docs/benchmarks/results/hf-minds14-2k.json`](docs/benchmarks/results/hf-minds14-2k.json).
+The result has a preserved baseline and a before/after profile report for a
+cached mel-filter-bank frontend optimization:
+[`docs/benchmarks/results/hf-minds14-2k-optimization.md`](docs/benchmarks/results/hf-minds14-2k-optimization.md).
+The raw result reports per-model stage timings, padding overhead, peak memory,
+full CUDA output diagnostics, and CPU-reference correctness checks.
+That change preserves CPU PyTorch parity and frozen frontend scores. It improves
+frontend work for some model profiles, but the paired single-run end-to-end
+measurements are noisy and do not justify a universal speedup claim.
 
-Historical JAX 0.4.30 results are retained for provenance and explicitly
-separated by code revision and PyTorch baseline. See the
-[benchmark guide](https://github.com/hcsolakoglu/nisqa-jax/blob/main/docs/benchmarks/README.md).
+This result is an inference-runtime and numerical-parity measurement. The
+Minds14 corpus does not provide NISQA MOS labels, so it is not a perceptual
+accuracy claim. Do not infer a universal speedup from one GPU, dataset, or
+framework build. See the
+[benchmark guide](https://github.com/hcsolakoglu/nisqa-jax/blob/main/docs/benchmarks/README.md)
+for the exact command and interpretation boundaries.
 
 ## Documentation
 

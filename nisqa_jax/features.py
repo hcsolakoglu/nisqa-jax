@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from functools import lru_cache
 from pathlib import Path
 
 import librosa as lb
@@ -17,6 +18,26 @@ def _validate_channel(channel: int | None) -> None:
     # as channel 1/0. Floats (e.g. 0.0) are also rejected — a channel index is integral.
     if isinstance(channel, bool) or not isinstance(channel, int):
         raise ValueError(f"channel must be None or an int (not bool/float), got {channel!r} ({type(channel).__name__})")
+
+
+@lru_cache(maxsize=32)
+def _mel_basis(
+    sr: int,
+    n_fft: int,
+    n_mels: int,
+    fmin: float,
+    fmax: float | None,
+) -> np.ndarray:
+    """Cache immutable mel filter banks across files with the same frontend config."""
+    return lb.filters.mel(
+        sr=sr,
+        n_fft=n_fft,
+        n_mels=n_mels,
+        fmin=fmin,
+        fmax=fmax,
+        htk=False,
+        norm="slaney",
+    )
 
 
 def load_melspec(file_path: str | Path, cfg: FeatureConfig, *, channel: int | None = None) -> np.ndarray:
@@ -43,23 +64,22 @@ def load_melspec(file_path: str | Path, cfg: FeatureConfig, *, channel: int | No
 
     hop_length = int(sr * cfg.hop_length_seconds)
     win_length = int(sr * cfg.win_length_seconds)
-    spec = lb.feature.melspectrogram(
+    stft = lb.stft(
         y=y,
-        sr=sr,
-        S=None,
         n_fft=cfg.n_fft,
         hop_length=hop_length,
         win_length=win_length,
         window="hann",
         center=True,
         pad_mode="reflect",
-        power=1.0,
-        n_mels=cfg.n_mels,
-        fmin=0.0,
-        fmax=cfg.fmax,
-        htk=False,
-        norm="slaney",
     )
+    spec = _mel_basis(
+        int(sr),
+        cfg.n_fft,
+        cfg.n_mels,
+        0.0,
+        cfg.fmax,
+    ) @ np.abs(stft)
     return lb.core.amplitude_to_db(spec, ref=1.0, amin=1e-4, top_db=80.0).astype(np.float32)
 
 

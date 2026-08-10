@@ -14,6 +14,8 @@ include SECURITY.md
 include pyproject.toml
 include requirements-jax.txt
 include requirements-gpu.txt
+include requirements-benchmark.txt
+recursive-include docs/benchmarks/results *.json *.txt
 
 # Maintainer and historical design documentation, including the immutable raw
 # benchmark evidence linked by the packaged historical guide.
