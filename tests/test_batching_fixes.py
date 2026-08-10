@@ -35,6 +35,7 @@ from nisqa_jax.predict import (  # noqa: E402
     _cost_exponent,
     _fixed_chunks,
     _model_identity,
+    _segment_budget_chunks,
     _validate_batch_size,
     _validate_positive_int,
     default_prewarm_grid,
@@ -181,7 +182,7 @@ def test_default_prewarm_grid_self_att() -> None:
     from nisqa_jax.checkpoint import load_converted_checkpoint
     cfg, _ = load_converted_checkpoint(MOS_ONLY)
     grid = default_prewarm_grid(cfg)
-    assert grid == [32, 64, 128, 256, 512, 1024, 1300]
+    assert grid == [128, 256, 512, 1024, 1300]
     # Grid reaches max_segments (the longest real batch is a cache hit).
     assert grid[-1] == cfg.feature.max_segments
     # Not a single length (the prior bug prewarmed only [bucket]).
@@ -194,7 +195,7 @@ def test_default_prewarm_grid_tts() -> None:
     from nisqa_jax.checkpoint import load_converted_checkpoint
     cfg, _ = load_converted_checkpoint(TTS)
     grid = default_prewarm_grid(cfg)
-    assert grid == [64, 128, 256, 512, 1024, 2048, 4096, 6000]
+    assert grid == [256, 512, 1024, 2048, 4096, 6000]
     assert grid[-1] == 6000
 
 
@@ -242,8 +243,28 @@ def test_cli_prewarm_compiles_grid_not_single_length(tmp_path: Path, monkeypatch
         ])
     assert captured["batch_sizes"] == [4]
     # The grid (multiple lengths up to max_segments), not a single bucket length.
-    assert captured["bucket_lengths"] == [32, 64, 128, 256, 512, 1024, 1300]
+    assert captured["bucket_lengths"] == [128, 256, 512, 1024, 1300]
     assert len(captured["bucket_lengths"]) > 1
+
+
+def test_prewarm_pairs_compiles_only_requested_shapes() -> None:
+    from types import SimpleNamespace
+
+    from nisqa_jax.checkpoint import prewarm_pairs
+
+    calls: list[tuple[tuple[int, ...], tuple[int, ...]]] = []
+
+    class _StubModel:
+        config = SimpleNamespace(feature=SimpleNamespace(n_mels=3, seg_length=5))
+
+        def predict_segments(self, x, n_wins):
+            calls.append((tuple(x.shape), tuple(n_wins.shape)))
+
+    prewarm_pairs(_StubModel(), [(1, 8), (4, 16)])  # type: ignore[arg-type]
+    assert calls == [
+        ((1, 8, 1, 3, 5), (1,)),
+        ((4, 16, 1, 3, 5), (4,)),
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -446,6 +467,24 @@ def test_cost_aware_chunks_self_att_smaller_outlier_chunk_than_lstm() -> None:
     assert all(bs <= 32 for _, bs in lstm_chunks)
     # Both are deterministic (same input -> same output).
     assert _cost_aware_chunks(order, n_wins, 32, exponent=2) == sa_chunks
+
+
+def test_segment_budget_chunks_uses_power_of_two_tiers() -> None:
+    order = list(range(7))
+    lengths = [5000, 3000, 1000, 500, 500, 500, 100]
+    chunks = _segment_budget_chunks(order, lengths, 8, segment_budget=6000)
+    assert chunks == [
+        ([0], 1),
+        ([1, 2], 2),
+        ([3, 4, 5, 6], 8),
+    ]
+
+
+def test_segment_budget_chunks_rejects_invalid_budget() -> None:
+    with pytest.raises(ValueError, match="segment_budget"):
+        _segment_budget_chunks([0], [10], 4, segment_budget=0)
+    with pytest.raises(ValueError, match="segment_budget"):
+        _segment_budget_chunks([0], [10], 4, segment_budget=True)
 
 
 def test_cost_aware_chunks_isolate_long_outlier() -> None:

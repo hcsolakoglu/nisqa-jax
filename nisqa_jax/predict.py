@@ -103,12 +103,14 @@ def _error_row(model: NisqaJaxModel, path: Path, message: str) -> dict:
 def default_length_bucket(cfg: ModelConfig) -> int:
     """Model-derived length-bucket grid for the batch scheduler.
 
-    Self-attention checkpoints (``max_segments=1300``) compile fewest distinct
-    shapes on a 32-grid; TTS/LSTM (``max_segments=6000``) on a coarser 64-grid.
-    Callers may override via ``predict_batch(..., length_bucket=...)``; pass
-    ``length_bucket=1`` to disable grid rounding (exact chunk-max).
+    Self-attention checkpoints (``max_segments=1300``) use a 128-grid to limit
+    padding while reducing compile-shape cardinality. TTS/LSTM checkpoints
+    (``max_segments=6000``) use a coarser 256-grid because their recurrent cost
+    is linear in sequence length and the real heavy tail amortizes the larger
+    bucket. Callers may override via ``predict_batch(..., length_bucket=...)``;
+    pass ``length_bucket=1`` to disable grid rounding (exact chunk-max).
     """
-    return 32 if cfg.td == "self_att" else 64
+    return 128 if cfg.td == "self_att" else 256
 
 
 def _round_up(value: int, bucket: int) -> int:
@@ -135,8 +137,8 @@ def default_prewarm_grid(
     ``max_segments``, so the cap shape is exactly what a longest-batch chunk
     compiles to:
 
-      self_att (bucket=32, max=1300) -> [32, 64, 128, 256, 512, 1024, 1300]
-      tts      (bucket=64, max=6000) -> [64, 128, 256, 512, 1024, 2048, 4096, 6000]
+      self_att (bucket=128, max=1300) -> [128, 256, 512, 1024, 1300]
+      tts      (bucket=256, max=6000) -> [256, 512, 1024, 2048, 4096, 6000]
 
     This is a heuristic, not an exhaustive cover: real traffic may compile a few
     extra in-between bucket multiples on first hit (the persistent cache then
@@ -233,6 +235,43 @@ def _fixed_chunks(order: list[int], batch_size: int) -> list[list[int]]:
     return [order[start : start + batch_size] for start in range(0, len(order), batch_size)]
 
 
+def _segment_budget_chunks(
+    order: list[int],
+    n_wins_est: list[int],
+    batch_size: int,
+    *,
+    segment_budget: int,
+) -> list[tuple[list[int], int]]:
+    """Group sorted files under a padded-segment budget.
+
+    The leading file determines a power-of-two batch tier whose estimated
+    ``batch_size * n_wins`` does not exceed ``segment_budget``. This keeps the
+    scheduler deterministic and preserves length sorting while reducing launch
+    count for recurrent tails without mixing very long files into full batches.
+    The budget is a scheduling heuristic; actual padded length is still rounded
+    by ``length_bucket`` at execution time.
+    """
+    if not order:
+        return []
+    if isinstance(segment_budget, bool) or not isinstance(segment_budget, int) or segment_budget < 1:
+        raise ValueError(f"segment_budget must be an int >= 1, got {segment_budget!r}")
+    if batch_size < 1:
+        raise ValueError(f"batch_size must be >= 1, got {batch_size}")
+
+    chunks: list[tuple[list[int], int]] = []
+    i = 0
+    while i < len(order):
+        length = max(1, int(n_wins_est[order[i]]))
+        tier_cap = min(batch_size, max(1, segment_budget // length))
+        tier = 1
+        while tier * 2 <= tier_cap:
+            tier *= 2
+        end = min(len(order), i + tier)
+        chunks.append((order[i:end], tier))
+        i = end
+    return chunks
+
+
 def _cost_aware_chunks(
     order: list[int], n_wins_est: list[int], batch_size: int, *, exponent: int = 1
 ) -> list[tuple[list[int], int]]:
@@ -286,6 +325,7 @@ def predict_batch(
     on_error: str = "raise",
     auto_batch: bool = False,
     batch_mode: str = "fixed",
+    segment_budget: int | None = None,
 ) -> pd.DataFrame:
     """Length-aware batched prediction.
 
@@ -315,6 +355,11 @@ def predict_batch(
         scores are identical to fixed mode (only grouping changes). This is a
         heuristic — not a global optimum / DP solution — that reduces the
         cost proxy. Requires ``sort_by_length=True``.
+      * ``"segment_budget"``: a TTS-oriented tier scheduler. The leading
+        length chooses the largest power-of-two tier whose estimated
+        ``batch_size * n_wins`` fits ``segment_budget``. Requires
+        ``sort_by_length=True`` and an explicit positive ``segment_budget``;
+        it is experimental and does not change model outputs.
 
     ``batch_size`` is clamped to ``len(wav_paths)`` for execution: a batch
     larger than the dataset would only pad with dummy rows (a pathological
@@ -345,12 +390,17 @@ def predict_batch(
     """
     if on_error not in {"raise", "collect"}:
         raise ValueError(f"on_error must be 'raise' or 'collect', got {on_error!r}")
-    if batch_mode not in {"fixed", "cost_aware"}:
-        raise ValueError(f"batch_mode must be 'fixed' or 'cost_aware', got {batch_mode!r}")
-    if batch_mode == "cost_aware" and not sort_by_length:
+    if batch_mode not in {"fixed", "cost_aware", "segment_budget"}:
+        raise ValueError(f"batch_mode must be 'fixed', 'cost_aware', or 'segment_budget', got {batch_mode!r}")
+    if batch_mode in {"cost_aware", "segment_budget"} and not sort_by_length:
         raise ValueError(
-            "batch_mode='cost_aware' requires sort_by_length=True " "(it isolates the long tail by sorted rank)"
+            f"batch_mode={batch_mode!r} requires sort_by_length=True "
+            "(it isolates the long tail by sorted rank)"
         )
+    if batch_mode == "segment_budget":
+        if segment_budget is None:
+            raise ValueError("segment_budget is required when batch_mode='segment_budget'")
+        segment_budget = _validate_positive_int(segment_budget, "segment_budget")
     batch_size = _validate_batch_size(batch_size)
     preprocess_workers = _validate_positive_int(preprocess_workers, "preprocess_workers")
     if length_bucket is not None:
@@ -412,6 +462,15 @@ def predict_batch(
     if batch_mode == "cost_aware":
         exponent = _cost_exponent(model.config.td)
         chunked_idx = _cost_aware_chunks(order, n_wins_est, effective_bs, exponent=exponent)
+    elif batch_mode == "segment_budget":
+        # segment_budget was validated above for this mode.
+        assert segment_budget is not None
+        chunked_idx = _segment_budget_chunks(
+            order,
+            n_wins_est,
+            effective_bs,
+            segment_budget=segment_budget,
+        )
     else:
         chunked_idx = [(chunk, effective_bs) for chunk in _fixed_chunks(order, effective_bs)]
 
@@ -429,10 +488,6 @@ def predict_batch(
         actual_n = np.stack([item[1] for item in prepared], axis=0)
         max_steps = min(_round_up(int(actual_n.max()), length_bucket), feat.max_segments)
         bsz = len(prepared)
-        # cur_bs is already clamped to <= len(paths) (effective_bs) and halves
-        # only inside auto_batch, so dummy padding can never balloon far beyond
-        # the real sample count.
-        cur_bs = min(cur_bs, bsz) if cur_bs > bsz else cur_bs
         # Fixed remainder padding: fill short samples with zeros (masked by n_wins);
         # if the chunk is smaller than cur_bs, repeat the last real sample to keep
         # the batch dimension == cur_bs (avoids an extra compile for a smaller
@@ -613,7 +668,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         "--length_bucket",
         type=int,
         default=None,
-        help="pad batch-max up to this grid (default: model-derived 32 self-att / 64 TTS; 1 = exact)",
+        help="pad batch-max up to this grid (default: model-derived 128 self-att / 256 TTS; 1 = exact)",
     )
     parser.add_argument(
         "--no_sort_by_length", action="store_true", help="disable stable length sort (use naive in-order batching)"
@@ -631,12 +686,17 @@ def main(argv: Sequence[str] | None = None) -> None:
     )
     parser.add_argument(
         "--batch_mode",
-        choices=["fixed", "cost_aware"],
+        choices=["fixed", "cost_aware", "segment_budget"],
         default="fixed",
-        help="fixed (default): adjacent fixed-size chunks of --bs; "
-        "cost_aware: bounded power-of-two batch sizes that isolate long "
-        "outliers (reduces padded-compute cost on heavy-tailed lengths; "
-        "requires length sort, scores identical to fixed)",
+        help="fixed (default): adjacent fixed-size chunks; cost_aware: heuristic "
+        "power-of-two long-tail isolation; segment_budget: experimental padded "
+        "segment budget tiers (requires --segment_budget)",
+    )
+    parser.add_argument(
+        "--segment_budget",
+        type=int,
+        default=None,
+        help="estimated padded-segment budget for --batch_mode segment_budget",
     )
     parser.add_argument(
         "--prewarm",
@@ -677,6 +737,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         on_error=args.on_error,
         auto_batch=args.auto_batch,
         batch_mode=args.batch_mode,
+        segment_budget=args.segment_budget,
     )
     df = _format_cli_results(args.mode, paths, predictions, csv_input=csv_input)
     if args.output_dir:

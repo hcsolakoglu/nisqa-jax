@@ -6,7 +6,7 @@ import threading
 import warnings
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Iterable, Sequence
 
 import jax
 import numpy as np
@@ -1021,27 +1021,52 @@ def prewarm(
     bucket_lengths: Sequence[int],
     cache_dir: str | Path | None = None,
 ) -> None:
-    """Pre-compile the JIT forward for each ``(batch_size, bucket_length)`` shape.
+    """Pre-compile the JIT forward for every Cartesian shape pair.
 
-    Runs a tiny dummy ``predict_segments`` (zeros, no audio) for every shape so
-    the persistent compilation cache is hot before real traffic — the first
-    real call for a given shape otherwise pays the XLA compile cost. Call after
-    ``load_model``. ``cache_dir`` configures the persistent cache if the model
-    was not already loaded with one (idempotent; safe to pass the same value).
-    Cheap: dummy zeros only, output is discarded.
+    This compatibility helper preserves the original Cartesian API. For a
+    production scheduler, prefer ``prewarm_pairs`` so only actual
+    ``(batch_size, padded_steps)`` shapes are compiled.
     """
-    if cache_dir is not None:
-        # Idempotent: no-op if load_model already configured the cache.
-        _configure_persistent_cache(Path(cache_dir).expanduser().resolve() / "jax_compilation_cache")
-    feat = model.config.feature
+    batch_sizes = list(batch_sizes)
+    bucket_lengths = list(bucket_lengths)
     for bs in batch_sizes:
         if bs < 1:
             raise ValueError(f"batch_sizes must be >= 1, got {bs}")
-        for bl in bucket_lengths:
-            if bl < 1:
-                raise ValueError(f"bucket_lengths must be >= 1, got {bl}")
-            # Dummy zeros of the exact compiled shape [bs, bl, 1, n_mels, seg_length];
-            # n_wins all = bl so the whole time axis is "valid" (no masking edge cases).
-            x = np.zeros((bs, bl, 1, feat.n_mels, feat.seg_length), dtype=np.float32)
-            n_wins = np.full((bs,), bl, dtype=np.int32)
-            model.predict_segments(x, n_wins)
+    for bl in bucket_lengths:
+        if bl < 1:
+            raise ValueError(f"bucket_lengths must be >= 1, got {bl}")
+    prewarm_pairs(
+        model,
+        ((bs, bl) for bs in batch_sizes for bl in bucket_lengths),
+        cache_dir=cache_dir,
+    )
+
+
+def prewarm_pairs(
+    model: NisqaJaxModel,
+    shape_pairs: Iterable[tuple[int, int]],
+    cache_dir: str | Path | None = None,
+) -> None:
+    """Pre-compile only the supplied ``(batch_size, padded_steps)`` shapes.
+
+    ``shape_pairs`` should come from the same length scheduler and manifest as
+    production traffic. This avoids warming unused Cartesian combinations and
+    makes cache coverage auditable. Each pair runs a zero-valued dummy forward;
+    outputs are discarded. ``cache_dir`` configures the persistent cache if the
+    model was not already loaded with one.
+    """
+    if cache_dir is not None:
+        _configure_persistent_cache(Path(cache_dir).expanduser().resolve() / "jax_compilation_cache")
+    feat = model.config.feature
+    for pair in shape_pairs:
+        try:
+            bs, bl = pair
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"shape_pairs entries must be (batch_size, padded_steps), got {pair!r}") from exc
+        if isinstance(bs, bool) or not isinstance(bs, int) or bs < 1:
+            raise ValueError(f"batch_size must be an int >= 1, got {bs!r}")
+        if isinstance(bl, bool) or not isinstance(bl, int) or bl < 1:
+            raise ValueError(f"padded_steps must be an int >= 1, got {bl!r}")
+        x = np.zeros((bs, bl, 1, feat.n_mels, feat.seg_length), dtype=np.float32)
+        n_wins = np.full((bs,), bl, dtype=np.int32)
+        model.predict_segments(x, n_wins)

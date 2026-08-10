@@ -1,0 +1,49 @@
+profile_seconds=5.603330
+sample_count=64
+
+         186450 function calls (185745 primitive calls) in 5.743 seconds
+
+   Ordered by: cumulative time
+   List reduced from 354 to 40 due to restriction <40>
+
+   ncalls  tottime  percall  cumtime  percall filename:lineno(function)
+      2/1    0.620    0.310    5.572    5.572 benchmark_hf_real.py:512(_run_engine)
+       64    0.157    0.002    4.645    0.073 benchmark_hf_real.py:564(submit)
+       64    2.644    0.041    4.510    0.070 features.py:43(load_melspec)
+       64    0.000    0.000    4.488    0.070 benchmark_hf_real.py:648(_preprocess_timed)
+       64    0.005    0.000    4.488    0.070 features.py:139(preprocess_file)
+       64    0.530    0.008    1.753    0.027 spectrum.py:54(stft)
+     3677    0.007    0.000    1.150    0.000 _backend.py:18(__ua_function__)
+     3677    0.010    0.000    1.142    0.000 _basic_backend.py:89(rfft)
+     3677    0.006    0.000    1.132    0.000 _basic_backend.py:27(_execute_1D)
+     3677    0.008    0.000    1.118    0.000 basic.py:40(r2c)
+     3677    1.078    0.000    1.078    0.000 {built-in method scipy.fft._pocketfft.pypocketfft.r2c}
+       64    0.026    0.000    0.209    0.003 model.py:402(device_segments)
+      256    0.011    0.000    0.173    0.001 api.py:2532(device_put)
+      128    0.001    0.000    0.156    0.001 array.py:304(asarray)
+      128    0.001    0.000    0.151    0.001 array.py:83(array)
+      256    0.001    0.000    0.143    0.001 core.py:534(bind)
+      256    0.001    0.000    0.140    0.001 core.py:538(_true_bind)
+      256    0.001    0.000    0.138    0.001 core.py:556(bind_with_trace)
+      256    0.001    0.000    0.137    0.001 core.py:1057(process_primitive)
+      192    0.005    0.000    0.136    0.001 profiler.py:351(wrapper)
+      256    0.002    0.000    0.136    0.001 dispatch.py:562(_batched_device_put_impl)
+       64    0.078    0.001    0.127    0.002 features.py:86(segment_melspec)
+      128    0.001    0.000    0.094    0.001 pxla.py:127(shard_args)
+      256    0.087    0.000    0.088    0.000 pxla.py:232(batched_device_put)
+      128    0.001    0.000    0.085    0.001 pxla.py:204(_shard_np_array)
+       64    0.000    0.000    0.070    0.001 audio.py:56(load)
+       64    0.001    0.000    0.066    0.001 audio.py:201(__soundfile_load)
+       64    0.047    0.001    0.057    0.001 benchmark_hf_real.py:473(_assemble_batch)
+       64    0.000    0.000    0.049    0.001 soundfile.py:875(read)
+       64    0.001    0.000    0.047    0.001 soundfile.py:1412(_array_io)
+       64    0.046    0.001    0.046    0.001 {built-in method numpy.ascontiguousarray}
+      192    0.045    0.000    0.045    0.000 {built-in method numpy.zeros}
+       64    0.044    0.001    0.045    0.001 soundfile.py:1426(_cdata_io)
+4829/4765    0.003    0.000    0.041    0.000 {built-in method numpy.asarray}
+       64    0.000    0.000    0.038    0.001 array.py:438(__array__)
+       64    0.037    0.001    0.038    0.001 array.py:636(_value)
+       64    0.003    0.000    0.037    0.001 spectrum.py:1906(amplitude_to_db)
+       64    0.032    0.000    0.033    0.001 spectrum.py:1697(power_to_db)
+      128    0.001    0.000    0.029    0.000 soundfile.py:591(__init__)
+      256    0.001    0.000    0.022    0.000 dispatch.py:523(_device_put_impl)

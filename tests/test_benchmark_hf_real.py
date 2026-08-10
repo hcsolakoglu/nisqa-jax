@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -28,6 +29,20 @@ def test_self_attention_window_guard_boundary(benchmark_module) -> None:
 def test_parser_uses_serial_decode_by_default(benchmark_module) -> None:
     args = benchmark_module._build_parser().parse_args(["--torch-source-root", "/tmp/torch-source"])
     assert args.decode_threads == 0
+    assert args.frontend_mode == "native"
+    assert args.batch_mode == "fixed"
+
+
+def test_schedule_uses_feature_config_and_td_for_default_bucket(benchmark_module, monkeypatch) -> None:
+    benchmark_module.estimate_n_wins = lambda path, cfg: {"short": 8, "long": 140}[path]
+    benchmark_module._fixed_chunks = lambda order, batch_size: [order]
+    cfg = SimpleNamespace(max_segments=1300)
+    chunks, estimates, bucket = benchmark_module._schedule(
+        ["short", "long"], cfg, "self_att", 2, "fixed", None, None
+    )
+    assert chunks == [([1, 0], 2)]
+    assert estimates == [8, 140]
+    assert bucket == 128
 
 
 def test_model_argument_validation(benchmark_module) -> None:

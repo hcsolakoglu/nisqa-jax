@@ -55,7 +55,9 @@ _model_args: Any = None
 _load_torch_checkpoint: Any = None
 estimate_n_wins: Any = None
 preprocess_file: Any = None
+_torch_lib: Any = None
 _cost_aware_chunks: Any = None
+_segment_budget_chunks: Any = None
 _cost_exponent: Any = None
 _fixed_chunks: Any = None
 _round_up: Any = None
@@ -64,7 +66,8 @@ WEIGHTS_DIR: Path
 
 def _load_runtime_helpers() -> None:
     global _model_args, _load_torch_checkpoint, estimate_n_wins, preprocess_file
-    global _cost_aware_chunks, _cost_exponent, _fixed_chunks, _round_up, WEIGHTS_DIR
+    global _cost_aware_chunks, _segment_budget_chunks, _cost_exponent, _fixed_chunks
+    global _round_up, WEIGHTS_DIR
     from nisqa_jax.bench_compare import _model_args as model_args
     from nisqa_jax.checkpoint import _load_torch_checkpoint as load_torch_checkpoint
     from nisqa_jax.features import estimate_n_wins as estimate_windows
@@ -73,6 +76,7 @@ def _load_runtime_helpers() -> None:
     from nisqa_jax.predict import _cost_exponent as cost_exponent
     from nisqa_jax.predict import _fixed_chunks as fixed_chunks
     from nisqa_jax.predict import _round_up as round_up
+    from nisqa_jax.predict import _segment_budget_chunks as segment_budget_chunks
     from nisqa_jax.weights import WEIGHTS_DIR as weights_dir
 
     _model_args = model_args
@@ -80,6 +84,7 @@ def _load_runtime_helpers() -> None:
     estimate_n_wins = estimate_windows
     preprocess_file = preprocess_audio
     _cost_aware_chunks = cost_aware_chunks
+    _segment_budget_chunks = segment_budget_chunks
     _cost_exponent = cost_exponent
     _fixed_chunks = fixed_chunks
     _round_up = round_up
@@ -126,11 +131,11 @@ def _write_json(path: Path, value: dict[str, Any]) -> None:
     path.write_text(json.dumps(value, indent=2, sort_keys=True, default=_json_value) + "\n")
 
 
-def _git_identity() -> dict[str, Any]:
+def _git_identity_for(repo_root: Path) -> dict[str, Any]:
     def run(*args: str) -> str | None:
         completed = subprocess.run(
             ["git", *args],
-            cwd=ROOT,
+            cwd=repo_root,
             check=False,
             capture_output=True,
             text=True,
@@ -138,10 +143,15 @@ def _git_identity() -> dict[str, Any]:
         return completed.stdout.strip() if completed.returncode == 0 else None
 
     return {
+        "root": str(repo_root),
         "commit": run("rev-parse", "HEAD"),
         "branch": run("branch", "--show-current"),
         "status_clean": run("status", "--porcelain") == "",
     }
+
+
+def _git_identity() -> dict[str, Any]:
+    return _git_identity_for(ROOT)
 
 
 def _nvidia_identity() -> dict[str, Any]:
@@ -410,12 +420,14 @@ def _collect_streamed_audio(args: argparse.Namespace, work_dir: Path) -> tuple[l
 
 
 def _load_torch_model(torch: Any, source_root: Path, checkpoint: Path, device_name: str):
+    global _torch_lib
     source_module = source_root / "nisqa" / "NISQA_lib.py"
     if not source_module.is_file():
         raise FileNotFoundError(f"PyTorch NISQA source not found at {source_module}")
     if str(source_root) not in sys.path:
         sys.path.insert(0, str(source_root))
     from nisqa import NISQA_lib as nl
+    _torch_lib = nl
 
     checkpoint_data = _load_torch_checkpoint(torch, checkpoint)
     args = checkpoint_data["args"]
@@ -438,6 +450,7 @@ def _schedule(
     batch_size: int,
     batch_mode: str,
     length_bucket: int | None,
+    segment_budget: int | None,
 ):
     if not paths:
         raise ValueError("cannot schedule an empty path list")
@@ -445,9 +458,13 @@ def _schedule(
     order = sorted(range(len(paths)), key=lambda idx: estimates[idx], reverse=True)
     effective_bs = min(batch_size, len(paths))
     if length_bucket is None:
-        length_bucket = 32 if td == "self_att" else 64
+        length_bucket = 128 if td == "self_att" else 256
     if batch_mode == "cost_aware":
         chunks = _cost_aware_chunks(order, estimates, effective_bs, exponent=_cost_exponent(td))
+    elif batch_mode == "segment_budget":
+        if segment_budget is None:
+            raise ValueError("segment_budget is required when batch_mode='segment_budget'")
+        chunks = _segment_budget_chunks(order, estimates, effective_bs, segment_budget=segment_budget)
     else:
         chunks = [(chunk, effective_bs) for chunk in _fixed_chunks(order, effective_bs)]
     return chunks, estimates, length_bucket
@@ -502,15 +519,23 @@ def _run_engine(
     batch_size: int,
     batch_mode: str,
     length_bucket: int | None,
+    segment_budget: int | None,
     preprocess_workers: int,
+    frontend_mode: str,
     torch: Any | None = None,
     torch_device: Any | None = None,
 ) -> tuple[np.ndarray, dict[str, Any]]:
-    chunks, estimates, bucket = _schedule(paths, cfg, td, batch_size, batch_mode, length_bucket)
+    chunks, estimates, bucket = _schedule(paths, cfg, td, batch_size, batch_mode, length_bucket, segment_budget)
     predictions: list[np.ndarray | None] = [None] * len(paths)
     shape_counts: Counter[str] = Counter()
     stats = {
         "engine": kind,
+        "frontend_mode": frontend_mode,
+        "lengths_device": (
+            "cpu"
+            if kind == "jax" or getattr(model, "supports_cpu_n_wins", False)
+            else getattr(torch_device, "type", "unknown")
+        ),
         "batch_size": batch_size,
         "batch_mode": batch_mode,
         "length_bucket": bucket,
@@ -537,9 +562,10 @@ def _run_engine(
     total_start = time.perf_counter()
 
     def submit(executor: ThreadPoolExecutor | None, chunk: list[int]):
+        preprocess = _preprocess_timed if kind == "jax" or frontend_mode == "shared" else _preprocess_torch_timed
         if executor is None:
-            return [_preprocess_timed(paths[index], cfg) for index in chunk]
-        return [executor.submit(_preprocess_timed, paths[index], cfg) for index in chunk]
+            return [preprocess(paths[index], cfg) for index in chunk]
+        return [executor.submit(preprocess, paths[index], cfg) for index in chunk]
 
     executor = ThreadPoolExecutor(max_workers=preprocess_workers) if preprocess_workers > 1 else None
     try:
@@ -580,12 +606,13 @@ def _run_engine(
                 _sync_torch(torch, torch_device)
                 transfer_start = time.perf_counter()
                 x_dev = torch.from_numpy(x).to(torch_device)
-                n_dev = torch.from_numpy(n_wins).to(torch_device)
+                n_cpu = torch.from_numpy(n_wins)
+                n_model = n_cpu if getattr(model, "supports_cpu_n_wins", False) else n_cpu.to(torch_device)
                 _sync_torch(torch, torch_device)
                 stats["input_transfer_seconds"] += time.perf_counter() - transfer_start
                 forward_start = time.perf_counter()
                 with torch.inference_mode():
-                    output = model(x_dev, n_dev)
+                    output = model(x_dev, n_model)
                 _sync_torch(torch, torch_device)
                 elapsed = time.perf_counter() - forward_start
                 host_start = time.perf_counter()
@@ -624,6 +651,32 @@ def _preprocess_timed(path: Path, cfg: Any) -> tuple[tuple[np.ndarray, np.ndarra
     return result, time.perf_counter() - start
 
 
+def _preprocess_torch_timed(path: Path, cfg: Any) -> tuple[tuple[np.ndarray, np.ndarray], float]:
+    if _torch_lib is None:
+        raise RuntimeError("PyTorch frontend is unavailable before loading a PyTorch model")
+    start = time.perf_counter()
+    mel = _torch_lib.get_librosa_melspec(
+        path,
+        sr=cfg.sr,
+        n_fft=cfg.n_fft,
+        hop_length=cfg.hop_length_seconds,
+        win_length=cfg.win_length_seconds,
+        n_mels=cfg.n_mels,
+        fmax=cfg.fmax,
+    )
+    segments, n_wins = _torch_lib.segment_specs(
+        path,
+        mel,
+        cfg.seg_length,
+        seg_hop=cfg.seg_hop_length,
+        max_length=None,
+    )
+    return (
+        (segments.numpy().astype(np.float32, copy=False), np.asarray(n_wins, dtype=np.int32)),
+        time.perf_counter() - start,
+    )
+
+
 def _profile_jax(
     model: Any,
     paths: Sequence[Path],
@@ -646,7 +699,9 @@ def _profile_jax(
         cfg=model.config.feature,
         td=model.config.td,
         length_bucket=args.length_bucket,
+        segment_budget=args.segment_budget,
         preprocess_workers=1,
+        frontend_mode=args.frontend_mode,
     )
     profiler.disable()
     stats = pstats.Stats(profiler).strip_dirs().sort_stats("cumulative")
@@ -679,6 +734,11 @@ def _load_environment(torch: Any, jax: Any, datasets_version: str | None) -> dic
         "jax": getattr(jax, "__version__", None),
         "jaxlib": getattr(__import__("jaxlib"), "__version__", None),
         "jax_devices": [str(device) for device in jax.devices()],
+        "jax_memory_config": {
+            "preallocate": os.environ.get("XLA_PYTHON_CLIENT_PREALLOCATE"),
+            "mem_fraction": os.environ.get("XLA_PYTHON_CLIENT_MEM_FRACTION"),
+            "allocator": os.environ.get("XLA_PYTHON_CLIENT_ALLOCATOR"),
+        },
         "torch": getattr(torch, "__version__", None),
         "torch_cuda": getattr(torch.version, "cuda", None),
         "torch_cuda_available": bool(torch.cuda.is_available()),
@@ -723,7 +783,18 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--torch-source-root", type=Path, required=True)
     parser.add_argument("--torch-weights-dir", type=Path)
     parser.add_argument("--batch-size", type=int, default=4)
-    parser.add_argument("--batch-mode", choices=["fixed", "cost_aware"], default="cost_aware")
+    parser.add_argument(
+        "--batch-mode",
+        choices=["fixed", "cost_aware", "segment_budget"],
+        default="fixed",
+    )
+    parser.add_argument(
+        "--segment-budget",
+        type=int,
+        default=None,
+        help="estimated padded-segment budget for --batch-mode segment_budget",
+    )
+    parser.add_argument("--frontend-mode", choices=["native", "shared"], default="native")
     parser.add_argument("--length-bucket", type=int, default=None)
     parser.add_argument("--preprocess-workers", type=int, default=4)
     parser.add_argument("--correctness-samples", type=int, default=64)
@@ -741,6 +812,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         raise ValueError("samples, batch-size, correctness-samples, and profile-samples must be >= 1")
     if args.shuffle_buffer < 1 or args.decode_threads < 0 or args.preprocess_workers < 1:
         raise ValueError("shuffle-buffer/preprocess-workers must be >= 1 and decode-threads must be >= 0")
+    if args.segment_budget is not None and args.segment_budget < 1:
+        raise ValueError("segment-budget must be >= 1")
+    if args.batch_mode == "segment_budget" and args.segment_budget is None:
+        raise ValueError("--segment-budget is required with --batch-mode segment_budget")
     if args.precision != "float32" and args.torch_device != "none":
         raise ValueError("PyTorch comparison requires --precision float32")
     model_names = _parse_models(args.models)
@@ -774,6 +849,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             "precision": args.precision,
             "batch_size": args.batch_size,
             "batch_mode": args.batch_mode,
+            "segment_budget": args.segment_budget,
+            "frontend_mode": args.frontend_mode,
             "length_bucket": args.length_bucket,
             "preprocess_workers": args.preprocess_workers,
             "correctness_samples": args.correctness_samples,
@@ -811,6 +888,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "torch_checkpoint": torch_checkpoint.name,
                 "torch_checkpoint_sha256": source_sha,
                 "source_sha256_match": True,
+                "torch_source": _git_identity_for(source_root),
+                "frontend_mode": args.frontend_mode,
             }
             print(f"[{name}] loading JAX {args.jax_device} and PyTorch {args.torch_device}", flush=True)
             jax_model = _load_jax_model(name, args.jax_device, args.precision)
@@ -827,7 +906,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 batch_size=args.batch_size,
                 batch_mode=args.batch_mode,
                 length_bucket=args.length_bucket,
+                segment_budget=args.segment_budget,
                 preprocess_workers=args.preprocess_workers,
+                frontend_mode=args.frontend_mode,
             )
             torch_output, torch_metrics = _run_engine(
                 "torch",
@@ -838,18 +919,24 @@ def main(argv: Sequence[str] | None = None) -> int:
                 batch_size=args.batch_size,
                 batch_mode=args.batch_mode,
                 length_bucket=args.length_bucket,
+                segment_budget=args.segment_budget,
                 preprocess_workers=args.preprocess_workers,
+                frontend_mode=args.frontend_mode,
                 torch=torch,
                 torch_device=torch_device,
             )
             model_result["jax"] = jax_metrics
             model_result["torch"] = torch_metrics
-            model_result["gpu_output_comparison"] = _diff_metrics(jax_output, torch_output, 5e-5)
-            model_result["gpu_output_comparison"]["interpretation"] = (
-                "diagnostic only; PyTorch cuDNN LSTM can accumulate gates in a different order"
+            gpu_comparison = _diff_metrics(jax_output, torch_output, 5e-5)
+            gpu_comparison["gate_applicable"] = args.frontend_mode == "shared" and name != "nisqa_tts"
+            gpu_comparison["interpretation"] = (
+                "diagnostic only; native frontends are intentionally independent"
+                if args.frontend_mode == "native"
+                else "diagnostic only; PyTorch cuDNN LSTM can accumulate gates in a different order"
                 if name == "nisqa_tts"
-                else "diagnostic output comparison"
+                else "shared-frontend diagnostic comparison"
             )
+            model_result["gpu_output_comparison"] = gpu_comparison
 
             profile = _profile_jax(jax_model, paths, args=args, output_path=args.output, model_name=name)
             model_result["profile"] = profile
@@ -878,7 +965,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 batch_size=args.batch_size,
                 batch_mode=args.batch_mode,
                 length_bucket=1,
+                segment_budget=args.segment_budget,
                 preprocess_workers=1,
+                frontend_mode=args.frontend_mode,
             )
             torch_output, torch_metrics = _run_engine(
                 "torch",
@@ -889,7 +978,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 batch_size=args.batch_size,
                 batch_mode=args.batch_mode,
                 length_bucket=1,
+                segment_budget=args.segment_budget,
                 preprocess_workers=1,
+                frontend_mode=args.frontend_mode,
                 torch=torch,
                 torch_device=torch_device,
             )
@@ -899,7 +990,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "comparison": comparison,
                 "jax_metrics": jax_metrics,
                 "torch_metrics": torch_metrics,
-                "reference": "upstream PyTorch CPU model with exact source checkpoint",
+                "reference": f"PyTorch CPU model from {source_root} with exact source checkpoint",
             }
             _write_json(args.output, result)
             del torch_model, jax_model

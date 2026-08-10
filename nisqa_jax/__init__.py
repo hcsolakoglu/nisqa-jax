@@ -3,7 +3,7 @@
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _pkg_version
 
-from .checkpoint import convert_checkpoint, load_converted_checkpoint, load_model, prewarm
+from .checkpoint import convert_checkpoint, load_converted_checkpoint, load_model, prewarm, prewarm_pairs
 from .config import FeatureConfig, ModelConfig
 from .model import Precision
 
@@ -21,6 +21,7 @@ __all__ = [
     "load_converted_checkpoint",
     "load_model",
     "prewarm",
+    "prewarm_pairs",
     "predict_batch",
     "predict_file",
 ]
