@@ -260,7 +260,7 @@ def test_prewarm_pairs_compiles_only_requested_shapes() -> None:
         def predict_segments(self, x, n_wins):
             calls.append((tuple(x.shape), tuple(n_wins.shape)))
 
-    prewarm_pairs(_StubModel(), [(1, 8), (4, 16)])  # type: ignore[arg-type]
+    prewarm_pairs(_StubModel(), [(np.int32(1), np.int64(8)), (4, 16)])  # type: ignore[arg-type]
     assert calls == [
         ((1, 8, 1, 3, 5), (1,)),
         ((4, 16, 1, 3, 5), (4,)),

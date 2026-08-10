@@ -328,7 +328,7 @@
       "jax_checkpoint": "nisqa.npz",
       "jax_checkpoint_sha256": "461591eac5cfb7fe245e2fac7427003eb13bd4bd51d60bc7644288a9f1cfccd9",
       "profile": {
-        "profile_file": "nisqa-cross-final-v3-nisqa.nisqa.profile.txt",
+        "profile_file": "hf-minds14-2k-cross-nisqa.profile.txt",
         "sample_count": 64,
         "stage_metrics": {
           "batch_count": 16,

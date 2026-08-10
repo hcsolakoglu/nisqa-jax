@@ -5,6 +5,7 @@ import json
 import threading
 import warnings
 from dataclasses import asdict
+from numbers import Integral
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
@@ -1063,10 +1064,12 @@ def prewarm_pairs(
             bs, bl = pair
         except (TypeError, ValueError) as exc:
             raise ValueError(f"shape_pairs entries must be (batch_size, padded_steps), got {pair!r}") from exc
-        if isinstance(bs, bool) or not isinstance(bs, int) or bs < 1:
+        if isinstance(bs, bool) or not isinstance(bs, Integral) or bs < 1:
             raise ValueError(f"batch_size must be an int >= 1, got {bs!r}")
-        if isinstance(bl, bool) or not isinstance(bl, int) or bl < 1:
+        if isinstance(bl, bool) or not isinstance(bl, Integral) or bl < 1:
             raise ValueError(f"padded_steps must be an int >= 1, got {bl!r}")
+        bs = int(bs)
+        bl = int(bl)
         x = np.zeros((bs, bl, 1, feat.n_mels, feat.seg_length), dtype=np.float32)
         n_wins = np.full((bs,), bl, dtype=np.int32)
         model.predict_segments(x, n_wins)
