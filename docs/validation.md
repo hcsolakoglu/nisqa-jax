@@ -67,10 +67,11 @@ All stacks run across Python 3.10, 3.11, and 3.12. A dependency-range change is
 incomplete until the matrix, exact CPU/GPU requirements, clean-room build,
 frontend baseline, and README agree.
 
-The current release-candidate audio baseline is ``librosa==0.10.2.post1`` and
-``soundfile==0.12.1`` across all CPU matrix cells and the direct CUDA pins. The
-open upgrade to librosa 0.11.0 and soundfile 0.14.0 is intentionally not part of
-this candidate until it has its own full frontend, CPU, and CUDA qualification.
+The current release-candidate audio baseline is ``librosa==0.11.0`` and
+``soundfile==0.14.0`` across all CPU matrix cells and the direct CUDA pins. This
+baseline has completed the full frontend, CPU, CUDA, artifact, and clean-room
+qualification described below. The previous ``0.10.2.post1`` / ``0.12.1`` stack
+remains the historical baseline for comparison.
 
 ## CUDA qualification
 
