@@ -28,6 +28,8 @@ versioning for published releases.
   `2e-6`.
 - The audio frontend caches mel filter banks by resolved frontend parameters;
   frozen frontend arrays and CPU PyTorch parity remain unchanged.
+- The bounded HF benchmark defaults to serial local-shard audio decode because
+  threaded `datasets` mapping can leave pending async tasks after early stop.
 - GitHub Actions use immutable checkout 7.0.1 and setup-python 7.0.0 SHAs.
 - Dependabot groups coupled runtime and GitHub Actions updates.
 - Packaging and clean-room tests verify all required artifacts, fixtures,

@@ -706,7 +706,10 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--samples", type=int, default=2000)
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
     parser.add_argument("--shuffle-buffer", type=int, default=512)
-    parser.add_argument("--decode-threads", type=int, default=1)
+    # datasets' threaded decode uses an async mapped iterator. A bounded early
+    # stop can leave tasks pending at interpreter shutdown, so local shard
+    # benchmarking defaults to serial decode; callers can still opt in.
+    parser.add_argument("--decode-threads", type=int, default=0)
     parser.add_argument(
         "--max-self-att-wins",
         type=int,

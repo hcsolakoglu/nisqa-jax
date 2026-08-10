@@ -16,6 +16,9 @@ Both runs used the same deterministic selection:
 - batch size: `4`
 - batch mode: `cost_aware`
 - profile subset: `64` examples per model
+- baseline streamed-decode threads: `1`
+- optimized validation streamed-decode threads: `0`; this avoids the
+  `datasets 5.0.0` pending-task shutdown path after bounded early stop
 
 The baseline is [`hf-minds14-2k.baseline.json`](hf-minds14-2k.baseline.json).
 The optimized result is [`hf-minds14-2k.json`](hf-minds14-2k.json). Raw
@@ -41,14 +44,15 @@ faster.
 
 | Model | JAX baseline | JAX optimized | JAX change | PyTorch baseline | PyTorch optimized | PyTorch change |
 |---|---:|---:|---:|---:|---:|---:|
-| `nisqa_mos_only` | 131.509 s | 112.068 s | -14.8% | 97.778 s | 82.684 s | -15.4% |
-| `nisqa` | 118.243 s | 128.289 s | +8.5% | 100.995 s | 124.916 s | +23.7% |
-| `nisqa_tts` | 292.556 s | 279.980 s | -4.3% | 127.877 s | 126.816 s | -0.8% |
+| `nisqa_mos_only` | 131.509 s | 94.870 s | -27.9% | 97.778 s | 77.879 s | -20.4% |
+| `nisqa` | 118.243 s | 94.050 s | -20.5% | 100.995 s | 74.104 s | -26.6% |
+| `nisqa_tts` | 292.556 s | 262.755 s | -10.2% | 127.877 s | 98.587 s | -22.9% |
 
-The `nisqa` end-to-end increase shows why these runs do not justify a general
-speedup claim. GPU scheduling, CPU contention, JAX compilation, and the
-single-run measurement introduce noise larger than the frontend change for
-some configurations.
+All three totals decreased in this validation rerun, but the comparison still does
+not establish a universal speedup. GPU scheduling, CPU contention, JAX
+compilation, and single-run noise can be larger than the frontend change. The
+streamed sample manifest is identical; decode-thread setting applies only to
+sample acquisition, before model timing begins.
 
 ## Profile evidence
 
@@ -57,9 +61,9 @@ The isolated JAX cProfile subset measured these cumulative frontend times for
 
 | Model | Baseline `load_melspec` | Optimized `load_melspec` | Change |
 |---|---:|---:|---:|
-| `nisqa_mos_only` | 4.909 s | 1.604 s | -67.3% |
-| `nisqa` | 2.488 s | 3.007 s | +20.9% |
-| `nisqa_tts` | 4.208 s | 2.548 s | -39.5% |
+| `nisqa_mos_only` | 4.909 s | 1.740 s | -64.6% |
+| `nisqa` | 2.488 s | 2.054 s | -17.4% |
+| `nisqa_tts` | 4.208 s | 2.464 s | -41.4% |
 
 The isolated profile is also subject to process and filesystem noise. The
 consistent result is structural: optimized profiles no longer contain the

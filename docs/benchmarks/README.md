@@ -83,8 +83,14 @@ python scripts/benchmark_hf_real.py \
   --profile-samples 64 \
   --batch-size 4 \
   --preprocess-workers 4 \
+  --decode-threads 0 \
   --output docs/benchmarks/results/hf-minds14-2k.json
 ```
+
+`--decode-threads 0` is intentional for local shards: the `datasets` threaded
+decode path can leave an async task pending at shutdown when bounded selection
+stops early. Serial decode is therefore the benchmark default; model
+preprocessing workers remain parallel and independent.
 
 The exact resolved Hugging Face revision, shard hashes, sample-manifest hash,
 length distribution, environment, checkpoint hashes, raw timings, correctness

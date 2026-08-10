@@ -25,6 +25,11 @@ def test_self_attention_window_guard_boundary(benchmark_module) -> None:
     assert benchmark_module._self_att_n_wins(417_120, 8_000) == 1_301
 
 
+def test_parser_uses_serial_decode_by_default(benchmark_module) -> None:
+    args = benchmark_module._build_parser().parse_args(["--torch-source-root", "/tmp/torch-source"])
+    assert args.decode_threads == 0
+
+
 def test_model_argument_validation(benchmark_module) -> None:
     assert benchmark_module._parse_models("nisqa_mos_only,nisqa_tts") == [
         "nisqa_mos_only",
