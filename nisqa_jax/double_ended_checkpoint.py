@@ -5,8 +5,8 @@ from typing import Any
 
 import numpy as np
 
-from . import checkpoint as _checkpoint
-from .double_ended import DoubleEndedConfig
+from nisqa_jax import checkpoint as _checkpoint
+from nisqa_jax.double_ended import DoubleEndedConfig
 
 
 _DE_PROFILE: dict[str, Any] = {
