@@ -8,7 +8,9 @@
 NISQA-JAX is a PyTorch-free JAX inference port for the three shipped
 [NISQA](https://github.com/gabrielmittag/NISQA) speech-quality checkpoints. It
 provides a Python API and PyTorch-compatible file, directory, and CSV command
-line interfaces using bundled, integrity-checked model artifacts.
+line interfaces using bundled, integrity-checked model artifacts. It also
+implements the canonical double-ended `NISQA_DE` graph and source-checkpoint
+conversion path documented by upstream `config/train_nisqa_double_ended.yaml`.
 
 > [!IMPORTANT]
 > Source code is MIT-licensed. The bundled model weights retain the upstream
@@ -16,19 +18,24 @@ line interfaces using bundled, integrity-checked model artifacts.
 > permission for the weights.
 
 This is a pre-1.0, inference-only project. Training, fine-tuning, dataset
-evaluation, double-ended `NISQA_DE`, and arbitrary NISQA architectures are
-outside the supported scope.
+evaluation, arbitrary `NISQA_DE` variants, and arbitrary NISQA architectures
+remain outside the supported scope. Upstream does not ship a pretrained
+`NISQA_DE` checkpoint, so the double-ended path is architecture/operator tested
+but does not claim real-pretrained-checkpoint or perceptual-task parity.
 
 ## Models
 
-| Artifact | Architecture | Python result |
+| Artifact / graph | Architecture | Python result |
 |---|---|---|
 | `nisqa_mos_only.npz` | adaptive CNN + self-attention | `{"mos": ...}` |
 | `nisqa.npz` | adaptive CNN + self-attention | `{"mos", "noi", "dis", "col", "loud"}` |
 | `nisqa_tts.npz` | standard CNN + bidirectional LSTM | `{"naturalness": ...}` |
+| canonical `NISQA_DE` source checkpoint | shared adaptive CNN + self-attention, cosine hard alignment, `x/y/-` fusion, second self-attention, attention pool | MOS array |
 
-Converted artifacts ship in `nisqa_jax/weights/`; normal inference does not
-need PyTorch or the original source checkpoints.
+Converted single-ended artifacts ship in `nisqa_jax/weights/`; normal inference
+does not need PyTorch or the original source checkpoints. `NISQA_DE` conversion
+accepts a trusted user-trained canonical upstream `.tar` and uses PyTorch only
+to safely extract its source tensors; the resulting forward graph is JAX-native.
 
 ## Quick start
 
@@ -85,6 +92,11 @@ Use `--auto_batch` to halve a recognized device-OOM batch down to one sample.
 Length-aware scheduling and bucket padding limit wasted compute and JIT-shape
 proliferation.
 
+For canonical double-ended inference, see
+[`docs/nisqa-de.md`](docs/nisqa-de.md). Its public API exposes
+`convert_double_ended_checkpoint`, `preprocess_pair`, and `NisqaDeJaxModel`
+without altering the three shipped single-ended artifact schemas.
+
 ## Backends
 
 | Backend | Status |
@@ -139,10 +151,11 @@ independently hashed PyTorch-reference vectors at a `5e-5` bound. Frozen audio
 fixtures protect WAV decoding, mel preprocessing, segmentation, and final
 predictions across the supported NumPy range.
 
-Every artifact load verifies its sidecar hash, metadata checksum, tensor names,
-shapes, dtypes, finiteness, and supported architecture. The strict release
-verifier additionally checks the bundled checksum catalog and rejects unknown
-artifacts.
+Every shipped artifact load verifies its sidecar hash, metadata checksum,
+tensor names, shapes, dtypes, finiteness, and supported architecture. The strict
+release verifier additionally checks the bundled checksum catalog and rejects
+unknown artifacts. Canonical `NISQA_DE` source conversion separately requires
+exhaustive source-key coverage and exact target tensor shapes.
 
 Live PyTorch parity is optional:
 
@@ -155,12 +168,15 @@ JAX_PLATFORMS=cpu python -m pytest -q -m parity
 See the
 [validation guide](https://github.com/hcsolakoglu/nisqa-jax/blob/main/docs/validation.md)
 for compatibility, packaging, vulnerability-audit, clean-room, and CUDA gates.
+The separate [NISQA_DE guide](docs/nisqa-de.md) records its narrower evidence
+boundary and remaining untested areas.
 
 ## Performance evidence
 
 The current JAX 0.6.2 implementation has CPU matrix, CUDA, artifact, and
-clean-room qualification. A reproducible two-thousand-sample real-audio
-comparison against the upstream PyTorch checkpoints is committed in
+clean-room qualification for the three shipped single-ended checkpoints. A
+reproducible two-thousand-sample real-audio comparison against the upstream
+PyTorch checkpoints is committed in
 [`docs/benchmarks/results/hf-minds14-2k.json`](docs/benchmarks/results/hf-minds14-2k.json).
 The result has a preserved baseline and a before/after profile report for a
 cached mel-filter-bank frontend optimization:
@@ -170,6 +186,9 @@ full CUDA output diagnostics, and CPU-reference correctness checks.
 That change preserves CPU PyTorch parity and frozen frontend scores. It improves
 frontend work for some model profiles, but the paired single-run end-to-end
 measurements are noisy and do not justify a universal speedup claim.
+
+No CUDA/TPU or production-scale performance claim is made for the new
+`NISQA_DE` path.
 
 This result is an inference-runtime and numerical-parity measurement. The
 Minds14 corpus does not provide NISQA MOS labels, so it is not a perceptual
@@ -183,6 +202,7 @@ for the exact command and interpretation boundaries.
 | Topic | Guide |
 |---|---|
 | Architecture and artifact contract | [Architecture](https://github.com/hcsolakoglu/nisqa-jax/blob/main/docs/architecture.md) |
+| Canonical double-ended inference | [NISQA_DE](docs/nisqa-de.md) |
 | Backends, precision, memory, and caching | [Backends](https://github.com/hcsolakoglu/nisqa-jax/blob/main/docs/backends.md) |
 | Validation and compatibility | [Validation](https://github.com/hcsolakoglu/nisqa-jax/blob/main/docs/validation.md) |
 | Benchmark policy and retained evidence | [Benchmarks](https://github.com/hcsolakoglu/nisqa-jax/blob/main/docs/benchmarks/README.md) |
