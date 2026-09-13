@@ -1,10 +1,9 @@
 from __future__ import annotations
 
+import jax
+import jax.numpy as jnp
 import numpy as np
 import pytest
-
-jax = pytest.importorskip("jax")
-import jax.numpy as jnp
 
 from nisqa_jax.double_ended import (
     DoubleEndedConfig,
