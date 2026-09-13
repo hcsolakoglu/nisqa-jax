@@ -5,7 +5,7 @@ from typing import Any
 
 import numpy as np
 
-from .checkpoint import _load_torch_checkpoint, _sha256, _torch
+from . import checkpoint as _checkpoint
 from .double_ended import DoubleEndedConfig
 
 
@@ -256,8 +256,8 @@ def validate_double_ended_parameter_shapes(params: dict[str, Any]) -> None:
 def convert_double_ended_checkpoint(checkpoint_path: str | Path) -> tuple[DoubleEndedConfig, dict[str, Any], str]:
     """Safely convert canonical upstream NISQA_DE .tar checkpoint in memory."""
     path = Path(checkpoint_path).expanduser().resolve()
-    torch = _torch()
-    checkpoint = _load_torch_checkpoint(torch, path)
+    torch = _checkpoint._torch()
+    checkpoint = _checkpoint._load_torch_checkpoint(torch, path)
     if not isinstance(checkpoint, dict) or not isinstance(checkpoint.get("args"), dict):
         raise ValueError("NISQA_DE checkpoint must contain an args dict")
     if "model_state_dict" not in checkpoint:
@@ -265,4 +265,4 @@ def convert_double_ended_checkpoint(checkpoint_path: str | Path) -> tuple[Double
     cfg = validate_double_ended_checkpoint_args(checkpoint["args"])
     params = convert_double_ended_state_dict(checkpoint["model_state_dict"])
     validate_double_ended_parameter_shapes(params)
-    return cfg, params, _sha256(path)
+    return cfg, params, _checkpoint._sha256(path)
