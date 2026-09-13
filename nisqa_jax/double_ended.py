@@ -5,29 +5,58 @@ from typing import Literal
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 
-from .model import ArrayTree, _dense
+from .model import (
+    ArrayTree,
+    _bidirectional_lstm,
+    _cnn_adapt,
+    _cnn_standard,
+    _dense,
+    _pool_att_ff,
+    _pool_last_step_bi,
+    _self_attention,
+)
 
 AlignmentMethod = Literal["bahd", "luong", "dot", "cosine", "distance", "none"]
 AlignmentApply = Literal["soft", "hard"]
 FusionMethod = Literal["x/y/-", "+/-", "x/y"]
+TimeDependency = Literal["self_att", "lstm", "skip"]
+PoolingMethod = Literal["att", "last_step_bi"]
+CnnMethod = Literal["adapt", "standard"]
 
 
 @dataclass(frozen=True)
 class DoubleEndedConfig:
-    """Runtime contract for upstream NISQA_DE inference profile.
+    """Native JAX runtime contract for the upstream ``NISQA_DE`` graph.
 
-    This intentionally starts with graph variants exercised by upstream
-    ``train_nisqa_double_ended.yaml`` and NISQA_DE defaults. Extending arbitrary
-    training architectures remains a separate compatibility decision.
+    Defaults mirror ``config/train_nisqa_double_ended.yaml``.  The graph is
+    intentionally parameter-driven: source checkpoint conversion is a separate
+    concern, so random-weight architecture parity can be tested without trusting
+    serialized checkpoints.
     """
 
+    cnn_model: CnnMethod = "adapt"
+    cnn_pool_1: tuple[int, int] | None = (24, 7)
+    cnn_pool_2: tuple[int, int] | None = (12, 5)
+    cnn_pool_3: tuple[int, int] | None = (6, 3)
+    td: TimeDependency = "self_att"
+    td_2: TimeDependency = "self_att"
+    pool: PoolingMethod = "att"
     de_align: AlignmentMethod = "cosine"
     de_align_apply: AlignmentApply = "hard"
     de_fuse: FusionMethod = "x/y/-"
     de_fuse_dim: int | None = None
 
     def __post_init__(self) -> None:
+        if self.cnn_model not in {"adapt", "standard"}:
+            raise ValueError(f"unsupported cnn_model: {self.cnn_model!r}")
+        if self.cnn_model == "adapt" and None in (self.cnn_pool_1, self.cnn_pool_2, self.cnn_pool_3):
+            raise ValueError("adaptive CNN requires cnn_pool_1/2/3")
+        if self.td not in {"self_att", "lstm", "skip"} or self.td_2 not in {"self_att", "lstm", "skip"}:
+            raise ValueError("td and td_2 must be self_att, lstm, or skip")
+        if self.pool not in {"att", "last_step_bi"}:
+            raise ValueError(f"unsupported pool: {self.pool!r}")
         if self.de_align not in {"bahd", "luong", "dot", "cosine", "distance", "none"}:
             raise ValueError(f"unsupported de_align: {self.de_align!r}")
         if self.de_align_apply not in {"soft", "hard"}:
@@ -55,7 +84,7 @@ def alignment_scores(
         dot = jnp.einsum("bqd,byd->bqy", query, y)
         return dot / (q_norm[:, :, None] * y_norm[:, None, :])
     if method == "distance":
-        # Upstream AttDistance defaults to dist_norm=1 and weight_norm=1.
+        # Upstream AttDistance defaults: dist_norm=1, weight_norm=1.
         dist = jnp.mean(jnp.abs(query[:, None, :, :] - y[:, :, None, :]), axis=-1)
         return -jnp.swapaxes(dist, 1, 2)
     if method == "bahd":
@@ -80,7 +109,6 @@ def align(
     """Align ``y`` to query using upstream masking and hard/soft application."""
     if method == "none":
         return y
-
     scores = alignment_scores(params, query, y, method)
     mask = jnp.arange(y.shape[1], dtype=n_wins_y.dtype)[None, :] < n_wins_y[:, None]
     scores = jnp.where(mask[:, None, :], scores, -jnp.inf)
@@ -113,3 +141,123 @@ def fuse(
     if fuse_dim is not None:
         out = _dense(out, params["linear"])
     return out
+
+
+def _run_cnn(params: ArrayTree, x: jnp.ndarray, cfg: DoubleEndedConfig) -> jnp.ndarray:
+    if cfg.cnn_model == "adapt":
+        return _cnn_adapt(params, x, cfg)  # type: ignore[arg-type]
+    return _cnn_standard(params, x)
+
+
+def _run_td(params: ArrayTree, x: jnp.ndarray, n_wins: jnp.ndarray, kind: TimeDependency) -> jnp.ndarray:
+    if kind == "self_att":
+        return _self_attention(params, x, n_wins)
+    if kind == "lstm":
+        return _bidirectional_lstm(params, x, n_wins)
+    if kind == "skip":
+        return x
+    raise ValueError(kind)  # pragma: no cover
+
+
+def _mask_steps(x: jnp.ndarray, n_wins: jnp.ndarray) -> jnp.ndarray:
+    valid = jnp.arange(x.shape[1], dtype=n_wins.dtype)[None, :] < n_wins[:, None]
+    return jnp.where(valid[:, :, None], x, jnp.zeros_like(x))
+
+
+def forward_double_ended_stages(
+    params: ArrayTree,
+    x: jnp.ndarray,
+    n_wins: jnp.ndarray,
+    *,
+    cfg: DoubleEndedConfig,
+) -> dict[str, jnp.ndarray]:
+    """Run NISQA_DE as source graph: shared CNN/TD, align, fuse, TD2, pool.
+
+    ``x`` is ``[batch, steps, 2, n_mels, segment_length]`` where channel 0 is
+    degraded and channel 1 is reference, matching upstream ``torch.chunk``.
+    ``n_wins`` is ``[batch, 2]`` in the same degraded/reference order.
+    """
+    n_wins = n_wins.astype(jnp.int32)
+    x_deg, x_ref = x[:, :, :1], x[:, :, 1:2]
+    n_deg, n_ref = n_wins[:, 0], n_wins[:, 1]
+
+    cnn_deg = _mask_steps(_run_cnn(params["cnn"], x_deg, cfg), n_deg)
+    cnn_ref = _mask_steps(_run_cnn(params["cnn"], x_ref, cfg), n_ref)
+    td_deg = _run_td(params["time_dependency"], cnn_deg, n_deg, cfg.td)
+    td_ref = _run_td(params["time_dependency"], cnn_ref, n_ref, cfg.td)
+    aligned_ref = align(
+        params.get("align", {}),
+        td_deg,
+        td_ref,
+        n_ref,
+        method=cfg.de_align,
+        apply=cfg.de_align_apply,
+    )
+    fused = fuse(
+        params.get("fuse", {}),
+        td_deg,
+        aligned_ref,
+        method=cfg.de_fuse,
+        fuse_dim=cfg.de_fuse_dim,
+    )
+    td2 = _run_td(params.get("time_dependency_2", {}), fused, n_deg, cfg.td_2)
+    if cfg.pool == "att":
+        out = _pool_att_ff(params["pool"], td2, n_deg)
+    else:
+        out = _pool_last_step_bi(params["pool"], td2, n_deg)
+    return {
+        "cnn_deg": cnn_deg,
+        "cnn_ref": cnn_ref,
+        "time_dependency_deg": td_deg,
+        "time_dependency_ref": td_ref,
+        "aligned_ref": aligned_ref,
+        "fused": fused,
+        "time_dependency_2": td2,
+        "pool": out.astype(jnp.float32),
+    }
+
+
+def forward_double_ended(
+    params: ArrayTree,
+    x: jnp.ndarray,
+    n_wins: jnp.ndarray,
+    *,
+    cfg: DoubleEndedConfig,
+) -> jnp.ndarray:
+    return forward_double_ended_stages(params, x, n_wins, cfg=cfg)["pool"]
+
+
+@dataclass
+class NisqaDeJaxModel:
+    """JIT wrapper for native NISQA_DE parameters.
+
+    Checkpoint conversion is intentionally not implicit.  Construct this class
+    only from an audited parameter tree; the separate converter must account for
+    every source tensor before a source checkpoint is accepted.
+    """
+
+    config: DoubleEndedConfig
+    params: ArrayTree
+    device: jax.Device
+
+    def __post_init__(self) -> None:
+        self.params = jax.device_put(self.params, self.device)
+
+        def strict_forward(params: ArrayTree, x: jnp.ndarray, n_wins: jnp.ndarray) -> jnp.ndarray:
+            with jax.default_matmul_precision("float32"):
+                return forward_double_ended(params, x, n_wins, cfg=self.config)
+
+        self._forward = jax.jit(strict_forward)
+
+    def __call__(self, x: np.ndarray, n_wins: np.ndarray) -> np.ndarray:
+        if not isinstance(x, np.ndarray) or x.ndim != 5 or x.shape[2] != 2:
+            raise ValueError("x must be [batch, steps, 2, n_mels, segment_length]")
+        if not isinstance(n_wins, np.ndarray) or n_wins.ndim != 2 or n_wins.shape != (x.shape[0], 2):
+            raise ValueError("n_wins must be integer [batch, 2] counts")
+        if not np.issubdtype(n_wins.dtype, np.integer) or np.issubdtype(n_wins.dtype, np.bool_):
+            raise ValueError("n_wins must have an integer, non-bool dtype")
+        if not np.all(np.isfinite(x)):
+            raise ValueError("x contains non-finite values")
+        if np.any(n_wins < 1) or np.any(n_wins > x.shape[1]):
+            raise ValueError("every n_wins value must be in [1, steps]")
+        return np.asarray(self._forward(self.params, jax.device_put(x, self.device), jax.device_put(n_wins, self.device)))
