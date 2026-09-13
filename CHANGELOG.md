@@ -8,6 +8,11 @@ versioning for published releases.
 
 ### Added
 
+- Canonical double-ended `NISQA_DE` JAX inference graph, including upstream
+  alignment/fusion semantics, independent degraded/reference preprocessing,
+  strict source-state conversion, JIT runtime wrapper, and adversarial masking
+  tests. Upstream ships no pretrained DE checkpoint, so this does not claim
+  real-pretrained-checkpoint or perceptual-task parity.
 - Qualified CUDA 12 environment and runtime requirements.
 - Frozen NumPy 1.26 audio-frontend and all-checkpoint output regression
   fixtures.
