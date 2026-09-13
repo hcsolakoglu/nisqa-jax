@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+
 import nisqa_jax.checkpoint as _checkpoint
 import nisqa_jax.double_ended as _double_ended
 
