@@ -30,7 +30,7 @@ CnnMethod = Literal["adapt", "standard"]
 class DoubleEndedConfig:
     """Native JAX runtime contract for the upstream ``NISQA_DE`` graph.
 
-    Defaults mirror ``config/train_nisqa_double_ended.yaml``.  The graph is
+    Defaults mirror ``config/train_nisqa_double_ended.yaml``. The graph is
     intentionally parameter-driven: source checkpoint conversion is a separate
     concern, so random-weight architecture parity can be tested without trusting
     serialized checkpoints.
@@ -77,14 +77,12 @@ def alignment_scores(
     if method == "dot":
         return jnp.einsum("bqd,byd->bqy", query, y)
     if method == "cosine":
-        # torch.nn.CosineSimilarity clamps each L2 norm independently at eps.
         eps = jnp.asarray(1e-8, dtype=query.dtype)
         q_norm = jnp.maximum(jnp.linalg.norm(query, axis=-1), eps)
         y_norm = jnp.maximum(jnp.linalg.norm(y, axis=-1), eps)
         dot = jnp.einsum("bqd,byd->bqy", query, y)
         return dot / (q_norm[:, :, None] * y_norm[:, None, :])
     if method == "distance":
-        # Upstream AttDistance defaults: dist_norm=1, weight_norm=1.
         dist = jnp.mean(jnp.abs(query[:, None, :, :] - y[:, :, None, :]), axis=-1)
         return -jnp.swapaxes(dist, 1, 2)
     if method == "bahd":
@@ -136,7 +134,7 @@ def fuse(
         out = jnp.concatenate((x + y, x - y), axis=-1)
     elif method == "x/y":
         out = jnp.concatenate((x, y), axis=-1)
-    else:  # pragma: no cover - DoubleEndedConfig validates this boundary.
+    else:  # pragma: no cover
         raise ValueError(f"unsupported de_fuse: {method!r}")
     if fuse_dim is not None:
         out = _dense(out, params["linear"])
@@ -171,12 +169,7 @@ def forward_double_ended_stages(
     *,
     cfg: DoubleEndedConfig,
 ) -> dict[str, jnp.ndarray]:
-    """Run NISQA_DE as source graph: shared CNN/TD, align, fuse, TD2, pool.
-
-    ``x`` is ``[batch, steps, 2, n_mels, segment_length]`` where channel 0 is
-    degraded and channel 1 is reference, matching upstream ``torch.chunk``.
-    ``n_wins`` is ``[batch, 2]`` in the same degraded/reference order.
-    """
+    """Run source graph: shared CNN/TD, align, fuse, TD2, pool."""
     n_wins = n_wins.astype(jnp.int32)
     x_deg, x_ref = x[:, :, :1], x[:, :, 1:2]
     n_deg, n_ref = n_wins[:, 0], n_wins[:, 1]
@@ -229,12 +222,7 @@ def forward_double_ended(
 
 @dataclass
 class NisqaDeJaxModel:
-    """JIT wrapper for native NISQA_DE parameters.
-
-    Checkpoint conversion is intentionally not implicit.  Construct this class
-    only from an audited parameter tree; the separate converter must account for
-    every source tensor before a source checkpoint is accepted.
-    """
+    """JIT wrapper for native NISQA_DE parameters."""
 
     config: DoubleEndedConfig
     params: ArrayTree
@@ -260,4 +248,6 @@ class NisqaDeJaxModel:
             raise ValueError("x contains non-finite values")
         if np.any(n_wins < 1) or np.any(n_wins > x.shape[1]):
             raise ValueError("every n_wins value must be in [1, steps]")
-        return np.asarray(self._forward(self.params, jax.device_put(x, self.device), jax.device_put(n_wins, self.device)))
+        x_device = jax.device_put(x, self.device)
+        n_wins_device = jax.device_put(n_wins, self.device)
+        return np.asarray(self._forward(self.params, x_device, n_wins_device))
