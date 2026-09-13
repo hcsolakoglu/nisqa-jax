@@ -4,9 +4,8 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-
-from nisqa_jax import checkpoint as _checkpoint
-from nisqa_jax.double_ended import DoubleEndedConfig
+import nisqa_jax.checkpoint as _checkpoint
+import nisqa_jax.double_ended as _double_ended
 
 
 _DE_PROFILE: dict[str, Any] = {
@@ -51,7 +50,7 @@ def _normalize(value: Any) -> Any:
     return value
 
 
-def validate_double_ended_checkpoint_args(args: dict[str, Any]) -> DoubleEndedConfig:
+def validate_double_ended_checkpoint_args(args: dict[str, Any]) -> _double_ended.DoubleEndedConfig:
     """Fail closed unless source args match canonical upstream NISQA_DE graph."""
     for key, expected in _DE_PROFILE.items():
         if key not in args:
@@ -61,7 +60,7 @@ def validate_double_ended_checkpoint_args(args: dict[str, Any]) -> DoubleEndedCo
             raise NotImplementedError(
                 f"Unsupported NISQA_DE {key}={args[key]!r}; canonical upstream profile requires {expected!r}"
             )
-    return DoubleEndedConfig()
+    return _double_ended.DoubleEndedConfig()
 
 
 def _array(value: Any) -> np.ndarray:
@@ -253,7 +252,9 @@ def validate_double_ended_parameter_shapes(params: dict[str, Any]) -> None:
         )
 
 
-def convert_double_ended_checkpoint(checkpoint_path: str | Path) -> tuple[DoubleEndedConfig, dict[str, Any], str]:
+def convert_double_ended_checkpoint(
+    checkpoint_path: str | Path,
+) -> tuple[_double_ended.DoubleEndedConfig, dict[str, Any], str]:
     """Safely convert canonical upstream NISQA_DE .tar checkpoint in memory."""
     path = Path(checkpoint_path).expanduser().resolve()
     torch = _checkpoint._torch()
