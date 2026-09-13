@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
@@ -10,7 +9,6 @@ from .checkpoint import _load_torch_checkpoint, _sha256, _torch
 from .double_ended import DoubleEndedConfig
 
 
-# Exact graph documented by upstream config/train_nisqa_double_ended.yaml.
 _DE_PROFILE: dict[str, Any] = {
     "model": "NISQA_DE",
     "cnn_model": "adapt",
@@ -63,19 +61,7 @@ def validate_double_ended_checkpoint_args(args: dict[str, Any]) -> DoubleEndedCo
             raise NotImplementedError(
                 f"Unsupported NISQA_DE {key}={args[key]!r}; canonical upstream profile requires {expected!r}"
             )
-    return DoubleEndedConfig(
-        cnn_model="adapt",
-        cnn_pool_1=(24, 7),
-        cnn_pool_2=(12, 5),
-        cnn_pool_3=(6, 3),
-        td="self_att",
-        td_2="self_att",
-        pool="att",
-        de_align="cosine",
-        de_align_apply="hard",
-        de_fuse="x/y/-",
-        de_fuse_dim=None,
-    )
+    return DoubleEndedConfig()
 
 
 def _array(value: Any) -> np.ndarray:
@@ -197,7 +183,7 @@ def _flatten(tree: Any, prefix: str = "") -> dict[str, np.ndarray]:
         for key, value in tree.items():
             out.update(_flatten(value, f"{prefix}{key}/"))
         return out
-    if isinstance(tree, (tuple, list)):
+    if isinstance(tree, tuple | list):
         out = {}
         for index, value in enumerate(tree):
             out.update(_flatten(value, f"{prefix}{index}/"))
@@ -217,11 +203,9 @@ def convert_double_ended_state_dict(sd: dict[str, Any]) -> dict[str, Any]:
             "linear2": _linear(sd, "pool.model.linear2"),
             "linear3": _linear(sd, "pool.model.linear3"),
         },
+        "align": {},
+        "fuse": {},
     }
-    # Canonical profile uses cosine alignment and unprojected x/y/- fusion, so
-    # both operators are parameter-free and deliberately have no optimizer slots.
-    params["align"] = {}
-    params["fuse"] = {}
     return params
 
 
@@ -258,22 +242,19 @@ def expected_double_ended_parameter_shapes() -> dict[str, list[int]]:
 
 def validate_double_ended_parameter_shapes(params: dict[str, Any]) -> None:
     actual = {name: list(value.shape) for name, value in sorted(_flatten(params).items())}
-    # Parameter-free alignment/fusion contribute no leaves.
     expected = expected_double_ended_parameter_shapes()
     if actual != expected:
         missing = sorted(set(expected) - set(actual))
         extra = sorted(set(actual) - set(expected))
         wrong = sorted(name for name in set(expected) & set(actual) if expected[name] != actual[name])
-        raise ValueError(f"converted NISQA_DE parameter contract mismatch: missing={missing}, extra={extra}, wrong={wrong}")
+        raise ValueError(
+            "converted NISQA_DE parameter contract mismatch: "
+            f"missing={missing}, extra={extra}, wrong={wrong}"
+        )
 
 
 def convert_double_ended_checkpoint(checkpoint_path: str | Path) -> tuple[DoubleEndedConfig, dict[str, Any], str]:
-    """Safely convert canonical upstream NISQA_DE .tar checkpoint in memory.
-
-    Upstream publishes the architecture/training recipe but no pretrained DE
-    checkpoint.  Therefore this function is available for user-trained canonical
-    checkpoints, while repository validation uses random-weight source parity.
-    """
+    """Safely convert canonical upstream NISQA_DE .tar checkpoint in memory."""
     path = Path(checkpoint_path).expanduser().resolve()
     torch = _torch()
     checkpoint = _load_torch_checkpoint(torch, path)
