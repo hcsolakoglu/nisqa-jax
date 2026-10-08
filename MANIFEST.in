@@ -6,6 +6,7 @@
 
 # License + metadata
 include LICENSE
+include NOTICE
 include CITATION.cff
 include README.md
 include CHANGELOG.md

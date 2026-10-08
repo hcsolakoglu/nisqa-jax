@@ -7,6 +7,11 @@ code of this JAX port is licensed separately under the MIT license (see the
 repository root LICENSE). The weights are NON-COMMERCIAL: commercial use
 requires separate permission from the weights' rights holders.
 
+Attribution (CC BY-NC-SA 4.0 section 3(a)):
+- Creator and source: Gabriel Mittag et al., TU Berlin, NISQA, https://github.com/gabrielmittag/NISQA
+- Changes: original PyTorch checkpoints were converted to NumPy `.npz` arrays; tensor values are unchanged and no retraining or fine-tuning was performed.
+- License of the original weights: CC BY-NC-SA 4.0, https://creativecommons.org/licenses/by-nc-sa/4.0/
+
 Attribution-NonCommercial-ShareAlike 4.0 International
 
 =======================================================================

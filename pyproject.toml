@@ -12,10 +12,10 @@ readme = "README.md"
 # CC-BY-NC-SA-4.0 model-weight artifacts. `AND` describes the obligations that
 # apply to the combined wheel; it does not relicense either component.
 license = "MIT AND CC-BY-NC-SA-4.0"
-license-files = ["LICENSE", "nisqa_jax/weights/LICENSE_model_weights"]
+license-files = ["LICENSE", "NOTICE", "nisqa_jax/weights/LICENSE_model_weights"]
 requires-python = ">=3.10"
 authors = [
-  { name = "Hasan Can Solakoglu", email = "cansolakoglu130@gmail.com" },
+  { name = "Hasan Can Solakoglu", email = "hello@hasancansolakoglu.com" },
 ]
 keywords = ["speech-quality", "NISQA", "JAX", "MOS", "inference"]
 classifiers = [
