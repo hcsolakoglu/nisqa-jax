@@ -1,9 +1,9 @@
 # NISQA-JAX
 
-![CI](https://github.com/hcsolakoglu/nisqa-jax/actions/workflows/ci.yml/badge.svg)
+[![CI](https://github.com/hcsolakoglu/nisqa-jax/actions/workflows/ci.yml/badge.svg)](https://github.com/hcsolakoglu/nisqa-jax/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/Python-3.10--3.12-3776AB)
-![Source license](https://img.shields.io/badge/source-MIT-blue)
-![Model weights](https://img.shields.io/badge/model%20weights-CC%20BY--NC--SA%204.0-orange)
+[![Source license](https://img.shields.io/badge/source-MIT-blue)](LICENSE)
+[![Model weights](https://img.shields.io/badge/model%20weights-CC%20BY--NC--SA%204.0-orange)](nisqa_jax/weights/LICENSE_model_weights)
 
 NISQA-JAX is a PyTorch-free JAX inference port for the three shipped
 [NISQA](https://github.com/gabrielmittag/NISQA) speech-quality checkpoints. It
@@ -35,6 +35,8 @@ need PyTorch or the original source checkpoints.
 Create an isolated CPU environment from a repository checkout:
 
 ```bash
+git clone https://github.com/hcsolakoglu/nisqa-jax.git
+cd nisqa-jax
 python -m venv .venv-cpu
 . .venv-cpu/bin/activate
 python -m pip install --upgrade pip
@@ -158,25 +160,24 @@ for compatibility, packaging, vulnerability-audit, clean-room, and CUDA gates.
 
 ## Performance evidence
 
-The current JAX 0.6.2 implementation has CPU matrix, CUDA, artifact, and
-clean-room qualification. A reproducible two-thousand-sample real-audio
-comparison against the upstream PyTorch checkpoints is committed in
-[`docs/benchmarks/results/hf-minds14-2k.json`](docs/benchmarks/results/hf-minds14-2k.json).
-The result has a preserved baseline and a before/after profile report for a
-cached mel-filter-bank frontend optimization:
-[`docs/benchmarks/results/hf-minds14-2k-optimization.md`](docs/benchmarks/results/hf-minds14-2k-optimization.md).
-The raw result reports per-model stage timings, padding overhead, peak memory,
-full CUDA output diagnostics, and CPU-reference correctness checks.
-That change preserves CPU PyTorch parity and frozen frontend scores. It improves
-frontend work for some model profiles, but the paired single-run end-to-end
-measurements are noisy and do not justify a universal speedup claim.
+A two-thousand-sample real-audio comparison against the PyTorch path
+([nisqa-pytorch-optimized](https://github.com/hcsolakoglu/nisqa-pytorch-optimized))
+is committed with raw results. It is an inference-runtime and numerical-parity
+measurement on one machine (RTX 3070, JAX 0.6.2, float32), not a perceptual
+accuracy claim, and single runs are noisy.
 
-This result is an inference-runtime and numerical-parity measurement. The
-Minds14 corpus does not provide NISQA MOS labels, so it is not a perceptual
-accuracy claim. Do not infer a universal speedup from one GPU, dataset, or
-framework build. See the
-[benchmark guide](https://github.com/hcsolakoglu/nisqa-jax/blob/main/docs/benchmarks/README.md)
-for the exact command and interpretation boundaries.
+| Model | End-to-end winner | Wall time (JAX / PyTorch) | CPU parity, max abs diff |
+|---|---|---|---:|
+| `nisqa_mos_only` | PyTorch | 128.2 s / 110.0 s | 1.4e-6 |
+| `nisqa` | PyTorch | 150.8 s / 119.2 s | 3.3e-6 |
+| `nisqa_tts` | JAX | 109.3 s / 186.9 s | 1.4e-6 |
+
+JAX has the faster warmed model core for both self-attention models, but its
+frontend wait and first-shape compilation cost erase that in the end-to-end run;
+JAX wins the long-sequence TTS model. Do not infer a universal speedup. Details:
+[cross-framework report](docs/benchmarks/results/hf-minds14-2k-cross-framework.md),
+[benchmark guide](docs/benchmarks/README.md) and the
+[frontend optimization report](docs/benchmarks/results/hf-minds14-2k-optimization.md).
 
 ## Documentation
 

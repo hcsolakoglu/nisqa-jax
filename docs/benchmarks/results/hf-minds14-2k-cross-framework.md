@@ -1,7 +1,7 @@
 # Minds14 cross-framework benchmark
 
-This report compares the optimized JAX implementation with the separate modern
-PyTorch working tree on the same real-audio manifest. It is a runtime and
+This report compares the optimized JAX implementation with the modernized
+PyTorch inference path ([nisqa-pytorch-optimized](https://github.com/hcsolakoglu/nisqa-pytorch-optimized)) on the same real-audio manifest. It is a runtime and
 numerical-parity experiment, not a perceptual-quality leaderboard.
 
 ## Canonical run
@@ -45,7 +45,7 @@ Raw JSON and cProfile artifacts:
   (`Fix bounded benchmark decode cleanup`), with `status_clean=false` because
   the scheduler and benchmark changes were still in the working tree when the
   run started.
-- PyTorch source commit: `32c56382b854c61ba5e46be7745fcd5a444a426e`
+- PyTorch source commit: [`32c56382b854c61ba5e46be7745fcd5a444a426e`](https://github.com/hcsolakoglu/nisqa-pytorch-optimized/commit/32c56382b854c61ba5e46be7745fcd5a444a426e)
   (`modernize pretrained inference path`), clean working tree.
 - Python `3.12.12`.
 - JAX/jaxlib `0.6.2`.
